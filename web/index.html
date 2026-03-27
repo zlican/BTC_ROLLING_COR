@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>滚动因子总览</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/web/styles.css">
+</head>
+<body class="page-overview">
+  <div class="bg-orb orb-a"></div>
+  <div class="bg-orb orb-b"></div>
+  <main class="shell">
+    <section class="hero-card">
+      <div class="hero-copy">
+        <p class="eyebrow">Rolling Factor Dashboard</p>
+        <h1>山寨币对 BTC 的 1D 滚动相关因子</h1>
+        <p class="hero-text">主页面展示每个标的最新时刻的滚动因子值。点击所在行，进入对应标的的 1D 子页面查看历史曲线。</p>
+      </div>
+      <div class="hero-meta">
+        <div class="meta-item">
+          <span class="meta-label">Benchmark</span>
+          <strong id="benchmarkValue">-</strong>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">更新时间</span>
+          <strong id="updatedAtValue">-</strong>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">窗口</span>
+          <strong id="windowValue">-</strong>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <p class="panel-kicker">Main Page</p>
+          <h2>最新 1D 因子值</h2>
+        </div>
+        <button id="refreshButton" class="ghost-button" type="button">刷新数据</button>
+      </div>
+
+      <div id="errorBanner" class="error-banner hidden"></div>
+
+      <div class="table-wrap">
+        <table class="factor-table">
+          <thead>
+            <tr>
+              <th>标的</th>
+              <th>交易对</th>
+              <th>最新时刻</th>
+              <th>1D 滚动因子值</th>
+            </tr>
+          </thead>
+          <tbody id="factorTableBody">
+            <tr>
+              <td colspan="4" class="loading-cell">正在加载数据...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/web/main.js" defer></script>
+</body>
+</html>

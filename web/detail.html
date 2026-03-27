@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>标的 1D 滚动因子详情</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/web/styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+</head>
+<body class="page-detail">
+  <div class="bg-grid"></div>
+  <main class="shell">
+    <section class="hero-card detail-hero">
+      <div class="hero-copy">
+        <a class="back-link" href="/">返回主页面</a>
+        <p class="eyebrow">Asset Detail</p>
+        <h1 id="detailTitle">-</h1>
+        <p class="hero-text" id="detailSubtitle">正在加载标的详情...</p>
+      </div>
+      <div class="hero-meta">
+        <div class="meta-item">
+          <span class="meta-label">最新时刻</span>
+          <strong id="detailLatestTime">-</strong>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">最新 1D 值</span>
+          <strong id="detailLatestValue">-</strong>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">更新时间</span>
+          <strong id="detailUpdatedAt">-</strong>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel chart-panel">
+      <div class="panel-head">
+        <div>
+          <p class="panel-kicker">Sub Page</p>
+          <h2>ECharts 历史序列</h2>
+        </div>
+      </div>
+      <div id="detailErrorBanner" class="error-banner hidden"></div>
+      <div id="chart" class="chart-canvas"></div>
+    </section>
+  </main>
+
+  <script src="/static/web/detail.js" defer></script>
+</body>
+</html>
