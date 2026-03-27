@@ -43,6 +43,10 @@ function formatVolume(value) {
   return `${(Number(value) / 1e8).toFixed(2)}亿 USDT`;
 }
 
+function formatPct(value) {
+  return `${Number(value).toFixed(2)}%`;
+}
+
 function showError(message) {
   detailErrorBanner.textContent = message;
   detailErrorBanner.classList.remove("hidden");
@@ -125,7 +129,7 @@ function renderHeader() {
   }
 
   detailTitle.textContent = `${detailPayload.asset.display_name || detailPayload.asset.symbol} ${frame.timeframe} 四因子详情`;
-  detailSubtitle.textContent = `${detailPayload.asset.pair_label} | 数据源 ${detailPayload.asset.data_source.toUpperCase()} | 24h 成交额 ${formatVolume(detailPayload.asset.quote_volume)} | 当前图表 ${factorMap[selectedFactor].label}`;
+  detailSubtitle.textContent = `${detailPayload.asset.pair_label} | 数据源 ${detailPayload.asset.data_source.toUpperCase()} | 8H 涨跌幅 ${formatPct(detailPayload.asset.eight_hour_pct)} | 当前图表 ${factorMap[selectedFactor].label}`;
   detailLatestTime.textContent = formatDateTime(frame.latest_time);
   detailSignal.textContent = frame.signal;
   detailUpdatedAt.textContent = formatDateTime(detailPayload.updated_at);

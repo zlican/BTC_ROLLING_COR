@@ -54,13 +54,53 @@
           <thead>
             <tr>
               <th>标的</th>
-              <th>数据源 / 24h成交额</th>
+              <th>
+                <div class="sortable-head">
+                  <span>8H涨跌幅</span>
+                  <span class="sort-buttons">
+                    <button class="sort-button" type="button" data-sort-field="eight_hour_pct" data-sort-order="desc">↓</button>
+                    <button class="sort-button" type="button" data-sort-field="eight_hour_pct" data-sort-order="asc">↑</button>
+                  </span>
+                </div>
+              </th>
               <th>周期</th>
               <th>最新时刻</th>
-              <th>Corr</th>
-              <th>Beta</th>
-              <th>Residual</th>
-              <th>Lag Corr</th>
+              <th>
+                <div class="sortable-head">
+                  <span>Corr</span>
+                  <span class="sort-buttons">
+                    <button class="sort-button" type="button" data-sort-field="corr" data-sort-order="desc">↓</button>
+                    <button class="sort-button" type="button" data-sort-field="corr" data-sort-order="asc">↑</button>
+                  </span>
+                </div>
+              </th>
+              <th>
+                <div class="sortable-head">
+                  <span>Beta</span>
+                  <span class="sort-buttons">
+                    <button class="sort-button" type="button" data-sort-field="beta" data-sort-order="desc">↓</button>
+                    <button class="sort-button" type="button" data-sort-field="beta" data-sort-order="asc">↑</button>
+                  </span>
+                </div>
+              </th>
+              <th>
+                <div class="sortable-head">
+                  <span>Residual</span>
+                  <span class="sort-buttons">
+                    <button class="sort-button" type="button" data-sort-field="residual" data-sort-order="desc">↓</button>
+                    <button class="sort-button" type="button" data-sort-field="residual" data-sort-order="asc">↑</button>
+                  </span>
+                </div>
+              </th>
+              <th>
+                <div class="sortable-head">
+                  <span>Lag Corr</span>
+                  <span class="sort-buttons">
+                    <button class="sort-button" type="button" data-sort-field="lag_corr" data-sort-order="desc">↓</button>
+                    <button class="sort-button" type="button" data-sort-field="lag_corr" data-sort-order="asc">↑</button>
+                  </span>
+                </div>
+              </th>
               <th>信号</th>
             </tr>
           </thead>

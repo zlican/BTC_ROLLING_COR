@@ -37,6 +37,8 @@ type AssetConfig struct {
 	Symbol       string
 	DisplayName  string
 	QuoteVolume  float64
+	LastPrice    float64
+	EightHourPct float64
 	UniverseRank int
 }
 
@@ -67,6 +69,7 @@ type AssetSeries struct {
 	BenchmarkInst string  `json:"benchmark_inst"`
 	DataSource    string  `json:"data_source"`
 	QuoteVolume   float64 `json:"quote_volume"`
+	EightHourPct  float64 `json:"eight_hour_pct"`
 	Frames        map[string]*FactorFrame
 	FrameOrder    []string `json:"frame_order"`
 }
@@ -96,6 +99,7 @@ type okxResponse struct {
 type binanceTickerItem struct {
 	Symbol      string `json:"symbol"`
 	QuoteVolume string `json:"quoteVolume"`
+	LastPrice   string `json:"lastPrice"`
 }
 
 type MarketDataProvider interface {
@@ -324,6 +328,7 @@ func (s *FactorService) buildAssetSeries(ctx context.Context, cfg AssetConfig, s
 				BenchmarkInst: benchmark.InstID,
 				DataSource:    provider.Name(),
 				QuoteVolume:   cfg.QuoteVolume,
+				EightHourPct:  cfg.EightHourPct,
 				Frames: map[string]*FactorFrame{
 					frame.Timeframe: frame,
 				},
@@ -465,6 +470,10 @@ func (p *BinanceProvider) FetchDynamicUniverse(ctx context.Context, minQuoteVolu
 		if err != nil || quoteVolume < minQuoteVolume {
 			continue
 		}
+		lastPrice, err := strconv.ParseFloat(item.LastPrice, 64)
+		if err != nil || lastPrice <= 0 {
+			continue
+		}
 
 		displayName := strings.TrimSuffix(item.Symbol, "USDT")
 		if displayName == "" {
@@ -475,6 +484,7 @@ func (p *BinanceProvider) FetchDynamicUniverse(ctx context.Context, minQuoteVolu
 			Symbol:      item.Symbol,
 			DisplayName: displayName,
 			QuoteVolume: quoteVolume,
+			LastPrice:   lastPrice,
 		})
 	}
 
@@ -489,7 +499,97 @@ func (p *BinanceProvider) FetchDynamicUniverse(ctx context.Context, minQuoteVolu
 		assets[i].UniverseRank = i + 1
 	}
 
+	if err := p.attachEightHourChanges(ctx, assets); err != nil {
+		return nil, time.Time{}, err
+	}
+
 	return assets, time.Now().UTC(), nil
+}
+
+func (p *BinanceProvider) attachEightHourChanges(ctx context.Context, assets []AssetConfig) error {
+	if len(assets) == 0 {
+		return nil
+	}
+
+	startTimeMs := currentEightHourSegmentStart().UnixMilli()
+	sem := make(chan struct{}, 8)
+	errCh := make(chan error, len(assets))
+	var wg sync.WaitGroup
+
+	for i := range assets {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			changePct, err := p.fetchEightHourChange(ctx, assets[index].Symbol, assets[index].LastPrice, startTimeMs)
+			if err != nil {
+				errCh <- fmt.Errorf("%s 8h change: %w", assets[index].Symbol, err)
+				return
+			}
+			assets[index].EightHourPct = changePct
+		}(i)
+	}
+
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		return err
+	}
+	return nil
+}
+
+func currentEightHourSegmentStart() time.Time {
+	now := time.Now().UTC()
+	segmentStartHour := (now.Hour() / 8) * 8
+	return time.Date(now.Year(), now.Month(), now.Day(), segmentStartHour, 0, 0, 0, time.UTC)
+}
+
+func (p *BinanceProvider) fetchEightHourChange(ctx context.Context, symbol string, lastPrice float64, startTimeMs int64) (float64, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, binanceKlinesURL, nil)
+	if err != nil {
+		return 0, fmt.Errorf("build 8h kline request: %w", err)
+	}
+
+	query := req.URL.Query()
+	query.Set("symbol", symbol)
+	query.Set("interval", "8h")
+	query.Set("startTime", strconv.FormatInt(startTimeMs, 10))
+	query.Set("limit", "1")
+	req.URL.RawQuery = query.Encode()
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("request 8h kline: %w", err)
+	}
+
+	var payload [][]any
+	decodeErr := json.NewDecoder(resp.Body).Decode(&payload)
+	closeErr := resp.Body.Close()
+	if decodeErr != nil {
+		return 0, fmt.Errorf("decode 8h kline: %w", decodeErr)
+	}
+	if closeErr != nil {
+		return 0, fmt.Errorf("close 8h kline body: %w", closeErr)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("8h kline returned HTTP %d", resp.StatusCode)
+	}
+	if len(payload) == 0 || len(payload[0]) < 2 {
+		return 0, errors.New("8h kline payload is empty")
+	}
+
+	openPrice, err := jsonNumberToFloat64(payload[0][1])
+	if err != nil {
+		return 0, fmt.Errorf("parse 8h open price: %w", err)
+	}
+	if openPrice == 0 {
+		return 0, nil
+	}
+
+	return (lastPrice - openPrice) / openPrice * 100, nil
 }
 
 func (p *BinanceProvider) FetchBenchmarkHistory(ctx context.Context, startDate, endDate time.Time) (string, []dataPoint, error) {

@@ -7,8 +7,12 @@ const refreshButton = document.getElementById("refreshButton");
 const factorGuideButton = document.getElementById("factorGuideButton");
 const closeGuideButton = document.getElementById("closeGuideButton");
 const guideModal = document.getElementById("guideModal");
+const sortButtons = Array.from(document.querySelectorAll(".sort-button"));
 
 const AUTO_REFRESH_MS = 60 * 60 * 1000;
+const DEFAULT_TIMEFRAME = "1D";
+let overviewItems = [];
+let sortState = { field: null, order: null };
 
 function formatDateTime(value) {
   const date = new Date(value);
@@ -24,6 +28,10 @@ function formatFactor(value) {
 
 function formatVolume(value) {
   return `${(Number(value) / 1e8).toFixed(2)}亿 USDT`;
+}
+
+function formatPct(value) {
+  return `${Number(value).toFixed(2)}%`;
 }
 
 function factorClass(value) {
@@ -76,8 +84,8 @@ function createFrameRow(asset, frame, rowSpan, isFirstRow) {
     metaCell.className = "sticky-group-cell";
     metaCell.innerHTML = `
       <div class="source-cell">
-        <strong>${asset.data_source.toUpperCase()}</strong>
-        <small>${formatVolume(asset.quote_volume)}</small>
+        <strong class="${factorClass(asset.eight_hour_pct)}">${formatPct(asset.eight_hour_pct)}</strong>
+        <small>${asset.data_source.toUpperCase()}</small>
       </div>
     `;
     row.appendChild(metaCell);
@@ -128,9 +136,46 @@ function createFrameRow(asset, frame, rowSpan, isFirstRow) {
   return row;
 }
 
+function getSortMetric(asset, field) {
+  if (field === "eight_hour_pct") {
+    return Number(asset.eight_hour_pct || 0);
+  }
+
+  const frames = asset.frames || [];
+  const preferredFrame = frames.find((frame) => frame.timeframe === DEFAULT_TIMEFRAME) || frames[0];
+  if (!preferredFrame) {
+    return Number.NEGATIVE_INFINITY;
+  }
+  return Number(preferredFrame[field] || 0);
+}
+
+function getSortedItems(items) {
+  const sorted = [...items];
+  if (!sortState.field || !sortState.order) {
+    return sorted;
+  }
+
+  sorted.sort((left, right) => {
+    const leftValue = getSortMetric(left, sortState.field);
+    const rightValue = getSortMetric(right, sortState.field);
+    if (leftValue === rightValue) {
+      return left.symbol.localeCompare(right.symbol);
+    }
+    return sortState.order === "desc" ? rightValue - leftValue : leftValue - rightValue;
+  });
+  return sorted;
+}
+
+function updateSortButtons() {
+  for (const button of sortButtons) {
+    const isActive = button.dataset.sortField === sortState.field && button.dataset.sortOrder === sortState.order;
+    button.classList.toggle("active", isActive);
+  }
+}
+
 function renderRows(items) {
   factorTableBody.innerHTML = "";
-  for (const asset of items) {
+  for (const asset of getSortedItems(items)) {
     const frames = asset.frames || [];
     if (frames.length === 0) {
       continue;
@@ -167,10 +212,12 @@ async function loadOverview() {
     }
 
     const payload = await response.json();
+    overviewItems = payload.items || [];
     benchmarkValue.textContent = payload.benchmark;
     updatedAtValue.textContent = `${formatDateTime(payload.updated_at)} | 标的池 ${formatDateTime(payload.universe_updated_at)}`;
     windowValue.textContent = `${payload.rolling_window} Days | ${payload.asset_count} Symbols`;
-    renderRows(payload.items || []);
+    renderRows(overviewItems);
+    updateSortButtons();
   } catch (error) {
     showError(error.message || "加载失败");
     factorTableBody.innerHTML = `
@@ -196,6 +243,16 @@ document.addEventListener("keydown", (event) => {
   }
 });
 refreshButton.addEventListener("click", loadOverview);
+for (const button of sortButtons) {
+  button.addEventListener("click", () => {
+    sortState = {
+      field: button.dataset.sortField,
+      order: button.dataset.sortOrder,
+    };
+    updateSortButtons();
+    renderRows(overviewItems);
+  });
+}
 
 loadOverview();
 setInterval(loadOverview, AUTO_REFRESH_MS);

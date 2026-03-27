@@ -28,11 +28,12 @@ type OverviewResponse struct {
 }
 
 type OverviewAssetItem struct {
-	Symbol      string              `json:"symbol"`
-	DisplayName string              `json:"display_name"`
-	DataSource  string              `json:"data_source"`
-	QuoteVolume float64             `json:"quote_volume"`
-	Frames      []OverviewFrameItem `json:"frames"`
+	Symbol       string              `json:"symbol"`
+	DisplayName  string              `json:"display_name"`
+	DataSource   string              `json:"data_source"`
+	QuoteVolume  float64             `json:"quote_volume"`
+	EightHourPct float64             `json:"eight_hour_pct"`
+	Frames       []OverviewFrameItem `json:"frames"`
 }
 
 type OverviewFrameItem struct {
@@ -61,6 +62,7 @@ type DetailAssetOutput struct {
 	BenchmarkInst string              `json:"benchmark_inst"`
 	DataSource    string              `json:"data_source"`
 	QuoteVolume   float64             `json:"quote_volume"`
+	EightHourPct  float64             `json:"eight_hour_pct"`
 	Frames        []DetailFrameOutput `json:"frames"`
 }
 
@@ -137,11 +139,12 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		}
 
 		items = append(items, OverviewAssetItem{
-			Symbol:      asset.Symbol,
-			DisplayName: asset.DisplayName,
-			DataSource:  asset.DataSource,
-			QuoteVolume: asset.QuoteVolume,
-			Frames:      frames,
+			Symbol:       asset.Symbol,
+			DisplayName:  asset.DisplayName,
+			DataSource:   asset.DataSource,
+			QuoteVolume:  asset.QuoteVolume,
+			EightHourPct: asset.EightHourPct,
+			Frames:       frames,
 		})
 	}
 
@@ -207,6 +210,7 @@ func (s *Server) handleDetail(w http.ResponseWriter, r *http.Request) {
 			BenchmarkInst: asset.BenchmarkInst,
 			DataSource:    asset.DataSource,
 			QuoteVolume:   asset.QuoteVolume,
+			EightHourPct:  asset.EightHourPct,
 			Frames:        frames,
 		},
 	})

@@ -153,6 +153,37 @@ body {
   align-items: center;
 }
 
+.sortable-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sort-buttons {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.sort-button {
+  width: 24px;
+  height: 24px;
+  border: 1px solid rgba(123, 47, 15, 0.16);
+  border-radius: 999px;
+  background: rgba(255, 252, 247, 0.8);
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  line-height: 1;
+  padding: 0;
+}
+
+.sort-button.active {
+  border-color: rgba(123, 47, 15, 0.34);
+  background: rgba(201, 99, 43, 0.16);
+  color: var(--accent-deep);
+}
+
 .ghost-button,
 .back-link,
 .pill-button {
