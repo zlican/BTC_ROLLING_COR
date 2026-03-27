@@ -17,6 +17,10 @@ function formatFactor(value) {
   return Number(value).toFixed(4);
 }
 
+function formatVolume(value) {
+  return `${(Number(value) / 1e8).toFixed(2)}亿`;
+}
+
 function showError(message) {
   errorBanner.textContent = message;
   errorBanner.classList.remove("hidden");
@@ -31,9 +35,10 @@ function renderRows(items) {
   for (const item of items) {
     const row = document.createElement("tr");
     row.tabIndex = 0;
+    const displayName = item.display_name || item.symbol;
     row.innerHTML = `
-      <td><span class="symbol-chip">${item.symbol}</span></td>
-      <td>${item.pair_label}</td>
+      <td><span class="symbol-chip" title="${item.symbol}">${displayName}</span></td>
+      <td>${item.pair_label}<br><small>${item.data_source.toUpperCase()} | 24h成交额 ${formatVolume(item.quote_volume)}</small></td>
       <td>${formatDateTime(item.latest_time)}</td>
       <td class="${item.latest_value >= 0 ? "factor-positive" : "factor-negative"}">${formatFactor(item.latest_value)}</td>
     `;
@@ -67,9 +72,9 @@ async function loadOverview() {
     }
 
     const payload = await response.json();
-    benchmarkValue.textContent = payload.benchmark;
-    updatedAtValue.textContent = formatDateTime(payload.updated_at);
-    windowValue.textContent = `${payload.rolling_window} Days`;
+    benchmarkValue.textContent = `BTCUSDT / BTC-USDT`;
+    updatedAtValue.textContent = `${formatDateTime(payload.updated_at)} | 标的池 ${formatDateTime(payload.universe_updated_at)}`;
+    windowValue.textContent = `${payload.rolling_window} Days | ${payload.asset_count} Symbols`;
     renderRows(payload.items || []);
   } catch (error) {
     showError(error.message || "加载失败");

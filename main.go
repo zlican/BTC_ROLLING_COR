@@ -13,19 +13,17 @@ func main() {
 		log.Fatalf("create HTTP client: %v", err)
 	}
 
+	binanceProvider := &BinanceProvider{client: client}
+	okxProvider := &OKXProvider{client: client}
+
 	service := &FactorService{
-		client:          client,
-		ttl:             5 * time.Minute,
-		lookbackDays:    89,
-		rollingWindow:   30,
-		benchmarkInstID: "BTC-USD",
-		assets: []AssetConfig{
-			{Symbol: "ETH", InstID: "ETH-USD", PairLabel: "ETH-BTC"},
-			{Symbol: "SOL", InstID: "SOL-USD", PairLabel: "SOL-BTC"},
-			{Symbol: "BNB", InstID: "BNB-USD", PairLabel: "BNB-BTC"},
-			{Symbol: "XRP", InstID: "XRP-USD", PairLabel: "XRP-BTC"},
-			{Symbol: "DOGE", InstID: "DOGE-USD", PairLabel: "DOGE-BTC"},
-		},
+		universeProvider:  binanceProvider,
+		providers:         []MarketDataProvider{binanceProvider, okxProvider},
+		datasetTTL:        15 * time.Minute,
+		universeTTL:       15 * time.Minute,
+		lookbackDays:      89,
+		rollingWindow:     30,
+		minUniverseVolume: 100000000,
 	}
 
 	port := os.Getenv("PORT")

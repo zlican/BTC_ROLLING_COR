@@ -23,6 +23,10 @@ function formatFactor(value) {
   return Number(value).toFixed(4);
 }
 
+function formatVolume(value) {
+  return `${(Number(value) / 1e8).toFixed(2)}亿 USDT`;
+}
+
 function showError(message) {
   detailErrorBanner.textContent = message;
   detailErrorBanner.classList.remove("hidden");
@@ -115,8 +119,8 @@ async function loadDetail() {
     }
 
     const payload = await response.json();
-    detailTitle.textContent = `${payload.asset.symbol} 1D 滚动因子详情`;
-    detailSubtitle.textContent = `${payload.asset.pair_label} 对 ${payload.benchmark} 的 ${payload.rolling_window} 日滚动相关系数`;
+    detailTitle.textContent = `${payload.asset.display_name || payload.asset.symbol} 1D 滚动因子详情`;
+    detailSubtitle.textContent = `${payload.asset.pair_label} | 数据源 ${payload.asset.data_source.toUpperCase()} | 24h 成交额 ${formatVolume(payload.asset.quote_volume)}`;
     detailLatestTime.textContent = formatDateTime(payload.asset.latest_time);
     detailLatestValue.textContent = formatFactor(payload.asset.latest_value);
     detailUpdatedAt.textContent = formatDateTime(payload.updated_at);

@@ -17,18 +17,25 @@ type Server struct {
 }
 
 type OverviewResponse struct {
-	Benchmark     string         `json:"benchmark"`
-	Timeframe     string         `json:"timeframe"`
-	RollingWindow int            `json:"rolling_window"`
-	UpdatedAt     string         `json:"updated_at"`
-	Items         []OverviewItem `json:"items"`
+	Benchmark           string         `json:"benchmark"`
+	Timeframe           string         `json:"timeframe"`
+	RollingWindow       int            `json:"rolling_window"`
+	UpdatedAt           string         `json:"updated_at"`
+	UniverseUpdatedAt   string         `json:"universe_updated_at"`
+	UniverseMinQuoteVol float64        `json:"universe_min_quote_vol"`
+	AssetCount          int            `json:"asset_count"`
+	Items               []OverviewItem `json:"items"`
 }
 
 type OverviewItem struct {
-	Symbol      string  `json:"symbol"`
-	PairLabel   string  `json:"pair_label"`
-	LatestTime  string  `json:"latest_time"`
-	LatestValue float64 `json:"latest_value"`
+	Symbol        string  `json:"symbol"`
+	DisplayName   string  `json:"display_name"`
+	PairLabel     string  `json:"pair_label"`
+	BenchmarkInst string  `json:"benchmark_inst"`
+	DataSource    string  `json:"data_source"`
+	QuoteVolume   float64 `json:"quote_volume"`
+	LatestTime    string  `json:"latest_time"`
+	LatestValue   float64 `json:"latest_value"`
 }
 
 type DetailResponse struct {
@@ -40,12 +47,16 @@ type DetailResponse struct {
 }
 
 type AssetResponse struct {
-	Symbol      string        `json:"symbol"`
-	InstID      string        `json:"inst_id"`
-	PairLabel   string        `json:"pair_label"`
-	LatestTime  string        `json:"latest_time"`
-	LatestValue float64       `json:"latest_value"`
-	Points      []PointOutput `json:"points"`
+	Symbol        string        `json:"symbol"`
+	DisplayName   string        `json:"display_name"`
+	InstID        string        `json:"inst_id"`
+	PairLabel     string        `json:"pair_label"`
+	BenchmarkInst string        `json:"benchmark_inst"`
+	DataSource    string        `json:"data_source"`
+	QuoteVolume   float64       `json:"quote_volume"`
+	LatestTime    string        `json:"latest_time"`
+	LatestValue   float64       `json:"latest_value"`
+	Points        []PointOutput `json:"points"`
 }
 
 type PointOutput struct {
@@ -93,19 +104,26 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	for _, symbol := range dataset.Order {
 		asset := dataset.Assets[symbol]
 		items = append(items, OverviewItem{
-			Symbol:      asset.Symbol,
-			PairLabel:   asset.PairLabel,
-			LatestTime:  asset.LatestTime.Format(timeLayout),
-			LatestValue: asset.LatestValue,
+			Symbol:        asset.Symbol,
+			DisplayName:   asset.DisplayName,
+			PairLabel:     asset.PairLabel,
+			BenchmarkInst: asset.BenchmarkInst,
+			DataSource:    asset.DataSource,
+			QuoteVolume:   asset.QuoteVolume,
+			LatestTime:    asset.LatestTime.Format(timeLayout),
+			LatestValue:   asset.LatestValue,
 		})
 	}
 
 	writeJSON(w, http.StatusOK, OverviewResponse{
-		Benchmark:     dataset.Benchmark,
-		Timeframe:     dataset.Timeframe,
-		RollingWindow: dataset.RollingWindow,
-		UpdatedAt:     dataset.UpdatedAt.Format(timeLayout),
-		Items:         items,
+		Benchmark:           dataset.Benchmark,
+		Timeframe:           dataset.Timeframe,
+		RollingWindow:       dataset.RollingWindow,
+		UpdatedAt:           dataset.UpdatedAt.Format(timeLayout),
+		UniverseUpdatedAt:   dataset.UniverseUpdatedAt.Format(timeLayout),
+		UniverseMinQuoteVol: dataset.UniverseMinQuoteVol,
+		AssetCount:          len(items),
+		Items:               items,
 	})
 }
 
@@ -142,12 +160,16 @@ func (s *Server) handleDetail(w http.ResponseWriter, r *http.Request) {
 		RollingWindow: dataset.RollingWindow,
 		UpdatedAt:     dataset.UpdatedAt.Format(timeLayout),
 		Asset: AssetResponse{
-			Symbol:      asset.Symbol,
-			InstID:      asset.InstID,
-			PairLabel:   asset.PairLabel,
-			LatestTime:  asset.LatestTime.Format(timeLayout),
-			LatestValue: asset.LatestValue,
-			Points:      points,
+			Symbol:        asset.Symbol,
+			DisplayName:   asset.DisplayName,
+			InstID:        asset.InstID,
+			PairLabel:     asset.PairLabel,
+			BenchmarkInst: asset.BenchmarkInst,
+			DataSource:    asset.DataSource,
+			QuoteVolume:   asset.QuoteVolume,
+			LatestTime:    asset.LatestTime.Format(timeLayout),
+			LatestValue:   asset.LatestValue,
+			Points:        points,
 		},
 	})
 }

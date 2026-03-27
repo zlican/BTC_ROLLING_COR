@@ -209,6 +209,11 @@ body {
   background: rgba(245, 213, 181, 0.28);
 }
 
+.factor-table small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .symbol-chip {
   display: inline-flex;
   align-items: center;
