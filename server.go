@@ -17,46 +17,65 @@ type Server struct {
 }
 
 type OverviewResponse struct {
-	Benchmark           string         `json:"benchmark"`
-	Timeframe           string         `json:"timeframe"`
-	RollingWindow       int            `json:"rolling_window"`
-	UpdatedAt           string         `json:"updated_at"`
-	UniverseUpdatedAt   string         `json:"universe_updated_at"`
-	UniverseMinQuoteVol float64        `json:"universe_min_quote_vol"`
-	AssetCount          int            `json:"asset_count"`
-	Items               []OverviewItem `json:"items"`
+	Benchmark           string              `json:"benchmark"`
+	Timeframes          []string            `json:"timeframes"`
+	RollingWindow       int                 `json:"rolling_window"`
+	UpdatedAt           string              `json:"updated_at"`
+	UniverseUpdatedAt   string              `json:"universe_updated_at"`
+	UniverseMinQuoteVol float64             `json:"universe_min_quote_vol"`
+	AssetCount          int                 `json:"asset_count"`
+	Items               []OverviewAssetItem `json:"items"`
 }
 
-type OverviewItem struct {
-	Symbol        string  `json:"symbol"`
-	DisplayName   string  `json:"display_name"`
-	PairLabel     string  `json:"pair_label"`
-	BenchmarkInst string  `json:"benchmark_inst"`
-	DataSource    string  `json:"data_source"`
-	QuoteVolume   float64 `json:"quote_volume"`
-	LatestTime    string  `json:"latest_time"`
-	LatestValue   float64 `json:"latest_value"`
+type OverviewAssetItem struct {
+	Symbol      string              `json:"symbol"`
+	DisplayName string              `json:"display_name"`
+	DataSource  string              `json:"data_source"`
+	QuoteVolume float64             `json:"quote_volume"`
+	Frames      []OverviewFrameItem `json:"frames"`
+}
+
+type OverviewFrameItem struct {
+	Timeframe  string  `json:"timeframe"`
+	LatestTime string  `json:"latest_time"`
+	Corr       float64 `json:"corr"`
+	Beta       float64 `json:"beta"`
+	Residual   float64 `json:"residual"`
+	LagCorr    float64 `json:"lag_corr"`
+	Signal     string  `json:"signal"`
 }
 
 type DetailResponse struct {
-	Benchmark     string        `json:"benchmark"`
-	Timeframe     string        `json:"timeframe"`
-	RollingWindow int           `json:"rolling_window"`
-	UpdatedAt     string        `json:"updated_at"`
-	Asset         AssetResponse `json:"asset"`
+	Benchmark     string            `json:"benchmark"`
+	Timeframes    []string          `json:"timeframes"`
+	RollingWindow int               `json:"rolling_window"`
+	UpdatedAt     string            `json:"updated_at"`
+	Asset         DetailAssetOutput `json:"asset"`
 }
 
-type AssetResponse struct {
-	Symbol        string        `json:"symbol"`
-	DisplayName   string        `json:"display_name"`
-	InstID        string        `json:"inst_id"`
-	PairLabel     string        `json:"pair_label"`
-	BenchmarkInst string        `json:"benchmark_inst"`
-	DataSource    string        `json:"data_source"`
-	QuoteVolume   float64       `json:"quote_volume"`
-	LatestTime    string        `json:"latest_time"`
-	LatestValue   float64       `json:"latest_value"`
-	Points        []PointOutput `json:"points"`
+type DetailAssetOutput struct {
+	Symbol        string              `json:"symbol"`
+	DisplayName   string              `json:"display_name"`
+	InstID        string              `json:"inst_id"`
+	PairLabel     string              `json:"pair_label"`
+	BenchmarkInst string              `json:"benchmark_inst"`
+	DataSource    string              `json:"data_source"`
+	QuoteVolume   float64             `json:"quote_volume"`
+	Frames        []DetailFrameOutput `json:"frames"`
+}
+
+type DetailFrameOutput struct {
+	Timeframe      string        `json:"timeframe"`
+	LatestTime     string        `json:"latest_time"`
+	Corr           float64       `json:"corr"`
+	Beta           float64       `json:"beta"`
+	Residual       float64       `json:"residual"`
+	LagCorr        float64       `json:"lag_corr"`
+	Signal         string        `json:"signal"`
+	CorrPoints     []PointOutput `json:"corr_points"`
+	BetaPoints     []PointOutput `json:"beta_points"`
+	ResidualPoints []PointOutput `json:"residual_points"`
+	LagCorrPoints  []PointOutput `json:"lag_corr_points"`
 }
 
 type PointOutput struct {
@@ -100,24 +119,35 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	items := make([]OverviewItem, 0, len(dataset.Order))
+	items := make([]OverviewAssetItem, 0, len(dataset.Order))
 	for _, symbol := range dataset.Order {
 		asset := dataset.Assets[symbol]
-		items = append(items, OverviewItem{
-			Symbol:        asset.Symbol,
-			DisplayName:   asset.DisplayName,
-			PairLabel:     asset.PairLabel,
-			BenchmarkInst: asset.BenchmarkInst,
-			DataSource:    asset.DataSource,
-			QuoteVolume:   asset.QuoteVolume,
-			LatestTime:    asset.LatestTime.Format(timeLayout),
-			LatestValue:   asset.LatestValue,
+		frames := make([]OverviewFrameItem, 0, len(asset.FrameOrder))
+		for _, timeframe := range asset.FrameOrder {
+			frame := asset.Frames[timeframe]
+			frames = append(frames, OverviewFrameItem{
+				Timeframe:  frame.Timeframe,
+				LatestTime: frame.LatestTime.Format(timeLayout),
+				Corr:       frame.LatestCorr,
+				Beta:       frame.LatestBeta,
+				Residual:   frame.LatestResidual,
+				LagCorr:    frame.LatestLagCorr,
+				Signal:     frame.Signal,
+			})
+		}
+
+		items = append(items, OverviewAssetItem{
+			Symbol:      asset.Symbol,
+			DisplayName: asset.DisplayName,
+			DataSource:  asset.DataSource,
+			QuoteVolume: asset.QuoteVolume,
+			Frames:      frames,
 		})
 	}
 
 	writeJSON(w, http.StatusOK, OverviewResponse{
 		Benchmark:           dataset.Benchmark,
-		Timeframe:           dataset.Timeframe,
+		Timeframes:          dataset.Timeframes,
 		RollingWindow:       dataset.RollingWindow,
 		UpdatedAt:           dataset.UpdatedAt.Format(timeLayout),
 		UniverseUpdatedAt:   dataset.UniverseUpdatedAt.Format(timeLayout),
@@ -146,20 +176,30 @@ func (s *Server) handleDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	points := make([]PointOutput, 0, len(asset.Points))
-	for _, point := range asset.Points {
-		points = append(points, PointOutput{
-			Time:  point.Time.Format(timeLayout),
-			Value: point.Value,
+	frames := make([]DetailFrameOutput, 0, len(asset.FrameOrder))
+	for _, timeframe := range asset.FrameOrder {
+		frame := asset.Frames[timeframe]
+		frames = append(frames, DetailFrameOutput{
+			Timeframe:      frame.Timeframe,
+			LatestTime:     frame.LatestTime.Format(timeLayout),
+			Corr:           frame.LatestCorr,
+			Beta:           frame.LatestBeta,
+			Residual:       frame.LatestResidual,
+			LagCorr:        frame.LatestLagCorr,
+			Signal:         frame.Signal,
+			CorrPoints:     pointsToOutput(frame.CorrPoints),
+			BetaPoints:     pointsToOutput(frame.BetaPoints),
+			ResidualPoints: pointsToOutput(frame.ResidualPoints),
+			LagCorrPoints:  pointsToOutput(frame.LagCorrPoints),
 		})
 	}
 
 	writeJSON(w, http.StatusOK, DetailResponse{
 		Benchmark:     dataset.Benchmark,
-		Timeframe:     dataset.Timeframe,
+		Timeframes:    dataset.Timeframes,
 		RollingWindow: dataset.RollingWindow,
 		UpdatedAt:     dataset.UpdatedAt.Format(timeLayout),
-		Asset: AssetResponse{
+		Asset: DetailAssetOutput{
 			Symbol:        asset.Symbol,
 			DisplayName:   asset.DisplayName,
 			InstID:        asset.InstID,
@@ -167,11 +207,20 @@ func (s *Server) handleDetail(w http.ResponseWriter, r *http.Request) {
 			BenchmarkInst: asset.BenchmarkInst,
 			DataSource:    asset.DataSource,
 			QuoteVolume:   asset.QuoteVolume,
-			LatestTime:    asset.LatestTime.Format(timeLayout),
-			LatestValue:   asset.LatestValue,
-			Points:        points,
+			Frames:        frames,
 		},
 	})
+}
+
+func pointsToOutput(points []FactorPoint) []PointOutput {
+	out := make([]PointOutput, 0, len(points))
+	for _, point := range points {
+		out = append(out, PointOutput{
+			Time:  point.Time.Format(timeLayout),
+			Value: point.Value,
+		})
+	}
+	return out
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

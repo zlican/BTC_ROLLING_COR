@@ -1,10 +1,26 @@
 const detailTitle = document.getElementById("detailTitle");
 const detailSubtitle = document.getElementById("detailSubtitle");
 const detailLatestTime = document.getElementById("detailLatestTime");
-const detailLatestValue = document.getElementById("detailLatestValue");
+const detailSignal = document.getElementById("detailSignal");
 const detailUpdatedAt = document.getElementById("detailUpdatedAt");
 const detailErrorBanner = document.getElementById("detailErrorBanner");
+const timeframeTabs = document.getElementById("timeframeTabs");
+const factorTabs = document.getElementById("factorTabs");
+const factorCards = document.getElementById("factorCards");
 const chartElement = document.getElementById("chart");
+
+const AUTO_REFRESH_MS = 60 * 60 * 1000;
+const factorMap = {
+  corr: { label: "Corr", key: "corr_points", latestKey: "corr", color: "#c9632b" },
+  beta: { label: "Beta", key: "beta_points", latestKey: "beta", color: "#2f7d6a" },
+  residual: { label: "Residual", key: "residual_points", latestKey: "residual", color: "#8757d7" },
+  lag_corr: { label: "Lag Corr", key: "lag_corr_points", latestKey: "lag_corr", color: "#a23d36" },
+};
+
+let chartInstance;
+let detailPayload;
+let selectedTimeframe;
+let selectedFactor = "corr";
 
 function getSymbol() {
   const params = new URLSearchParams(window.location.search);
@@ -36,14 +52,103 @@ function hideError() {
   detailErrorBanner.classList.add("hidden");
 }
 
-function renderChart(payload) {
-  const chart = echarts.init(chartElement);
-  const values = payload.asset.points.map((point) => [point.time, Number(point.value.toFixed(6))]);
+function getCurrentFrame() {
+  if (!detailPayload) {
+    return null;
+  }
+  return detailPayload.asset.frames.find((frame) => frame.timeframe === selectedTimeframe) || detailPayload.asset.frames[0] || null;
+}
 
-  chart.setOption({
+function renderTimeframeTabs() {
+  timeframeTabs.innerHTML = "";
+  for (const frame of detailPayload.asset.frames) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `pill-button${frame.timeframe === selectedTimeframe ? " active" : ""}`;
+    button.textContent = frame.timeframe;
+    button.addEventListener("click", () => {
+      selectedTimeframe = frame.timeframe;
+      render();
+    });
+    timeframeTabs.appendChild(button);
+  }
+}
+
+function renderFactorTabs() {
+  factorTabs.innerHTML = "";
+  for (const [factorKey, meta] of Object.entries(factorMap)) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `pill-button${factorKey === selectedFactor ? " active" : ""}`;
+    button.textContent = meta.label;
+    button.addEventListener("click", () => {
+      selectedFactor = factorKey;
+      renderChart();
+      renderMetricCards();
+      renderHeader();
+      renderFactorTabs();
+    });
+    factorTabs.appendChild(button);
+  }
+}
+
+function renderMetricCards() {
+  const frame = getCurrentFrame();
+  if (!frame) {
+    factorCards.innerHTML = "";
+    return;
+  }
+
+  factorCards.innerHTML = "";
+  for (const [factorKey, meta] of Object.entries(factorMap)) {
+    const card = document.createElement("article");
+    card.className = `metric-card${factorKey === selectedFactor ? " active" : ""}`;
+    card.innerHTML = `
+      <span class="metric-label">${meta.label}</span>
+      <strong>${formatFactor(frame[meta.latestKey])}</strong>
+    `;
+    card.addEventListener("click", () => {
+      selectedFactor = factorKey;
+      renderChart();
+      renderMetricCards();
+      renderHeader();
+      renderFactorTabs();
+    });
+    factorCards.appendChild(card);
+  }
+}
+
+function renderHeader() {
+  const frame = getCurrentFrame();
+  if (!frame) {
+    return;
+  }
+
+  detailTitle.textContent = `${detailPayload.asset.display_name || detailPayload.asset.symbol} ${frame.timeframe} 四因子详情`;
+  detailSubtitle.textContent = `${detailPayload.asset.pair_label} | 数据源 ${detailPayload.asset.data_source.toUpperCase()} | 24h 成交额 ${formatVolume(detailPayload.asset.quote_volume)} | 当前图表 ${factorMap[selectedFactor].label}`;
+  detailLatestTime.textContent = formatDateTime(frame.latest_time);
+  detailSignal.textContent = frame.signal;
+  detailUpdatedAt.textContent = formatDateTime(detailPayload.updated_at);
+}
+
+function renderChart() {
+  const frame = getCurrentFrame();
+  if (!frame) {
+    return;
+  }
+
+  const meta = factorMap[selectedFactor];
+  const values = (frame[meta.key] || []).map((point) => [point.time, Number(point.value.toFixed(6))]);
+
+  if (!chartInstance) {
+    chartInstance = echarts.init(chartElement);
+    window.addEventListener("resize", () => chartInstance.resize());
+  }
+
+  chartInstance.setOption({
     backgroundColor: "transparent",
-    animationDuration: 600,
-    color: ["#c9632b"],
+    animationDuration: 500,
+    color: [meta.color],
     tooltip: {
       trigger: "axis",
       backgroundColor: "rgba(33, 26, 21, 0.92)",
@@ -65,15 +170,13 @@ function renderChart(payload) {
     },
     yAxis: {
       type: "value",
-      min: -1,
-      max: 1,
       axisLabel: { color: "#6c5b4c" },
       axisLine: { show: false },
       splitLine: { lineStyle: { color: "rgba(94, 70, 44, 0.08)" } },
     },
     series: [
       {
-        name: payload.asset.pair_label,
+        name: `${frame.timeframe} ${meta.label}`,
         type: "line",
         smooth: true,
         symbol: "none",
@@ -86,8 +189,8 @@ function renderChart(payload) {
             x2: 0,
             y2: 1,
             colorStops: [
-              { offset: 0, color: "rgba(201, 99, 43, 0.35)" },
-              { offset: 1, color: "rgba(201, 99, 43, 0.02)" },
+              { offset: 0, color: `${meta.color}55` },
+              { offset: 1, color: `${meta.color}08` },
             ],
           },
         },
@@ -95,8 +198,14 @@ function renderChart(payload) {
       },
     ],
   });
+}
 
-  window.addEventListener("resize", () => chart.resize());
+function render() {
+  renderTimeframeTabs();
+  renderFactorTabs();
+  renderMetricCards();
+  renderHeader();
+  renderChart();
 }
 
 async function loadDetail() {
@@ -118,13 +227,9 @@ async function loadDetail() {
       throw new Error(payload.error || "获取详情失败");
     }
 
-    const payload = await response.json();
-    detailTitle.textContent = `${payload.asset.display_name || payload.asset.symbol} 1D 滚动因子详情`;
-    detailSubtitle.textContent = `${payload.asset.pair_label} | 数据源 ${payload.asset.data_source.toUpperCase()} | 24h 成交额 ${formatVolume(payload.asset.quote_volume)}`;
-    detailLatestTime.textContent = formatDateTime(payload.asset.latest_time);
-    detailLatestValue.textContent = formatFactor(payload.asset.latest_value);
-    detailUpdatedAt.textContent = formatDateTime(payload.updated_at);
-    renderChart(payload);
+    detailPayload = await response.json();
+    selectedTimeframe = detailPayload.asset.frames[0]?.timeframe || "1D";
+    render();
   } catch (error) {
     showError(error.message || "加载失败");
     detailTitle.textContent = `${symbol} 数据加载失败`;
@@ -133,3 +238,4 @@ async function loadDetail() {
 }
 
 loadDetail();
+setInterval(loadDetail, AUTO_REFRESH_MS);

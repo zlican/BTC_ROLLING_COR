@@ -28,7 +28,10 @@ const (
 	requestTimeout   = 20 * time.Second
 	pageLimit        = 100
 	binanceKlineSize = 150
+	minReturnVar     = 1e-10
 )
+
+var supportedTimeframes = []string{"1D"}
 
 type AssetConfig struct {
 	Symbol       string
@@ -42,22 +45,35 @@ type FactorPoint struct {
 	Value float64   `json:"value"`
 }
 
+type FactorFrame struct {
+	Timeframe      string        `json:"timeframe"`
+	LatestTime     time.Time     `json:"latest_time"`
+	LatestCorr     float64       `json:"latest_corr"`
+	LatestBeta     float64       `json:"latest_beta"`
+	LatestResidual float64       `json:"latest_residual"`
+	LatestLagCorr  float64       `json:"latest_lag_corr"`
+	Signal         string        `json:"signal"`
+	CorrPoints     []FactorPoint `json:"corr,omitempty"`
+	BetaPoints     []FactorPoint `json:"beta,omitempty"`
+	ResidualPoints []FactorPoint `json:"residual,omitempty"`
+	LagCorrPoints  []FactorPoint `json:"lag_corr,omitempty"`
+}
+
 type AssetSeries struct {
-	Symbol        string        `json:"symbol"`
-	DisplayName   string        `json:"display_name"`
-	InstID        string        `json:"inst_id"`
-	PairLabel     string        `json:"pair_label"`
-	BenchmarkInst string        `json:"benchmark_inst"`
-	DataSource    string        `json:"data_source"`
-	QuoteVolume   float64       `json:"quote_volume"`
-	LatestTime    time.Time     `json:"latest_time"`
-	LatestValue   float64       `json:"latest_value"`
-	Points        []FactorPoint `json:"points,omitempty"`
+	Symbol        string  `json:"symbol"`
+	DisplayName   string  `json:"display_name"`
+	InstID        string  `json:"inst_id"`
+	PairLabel     string  `json:"pair_label"`
+	BenchmarkInst string  `json:"benchmark_inst"`
+	DataSource    string  `json:"data_source"`
+	QuoteVolume   float64 `json:"quote_volume"`
+	Frames        map[string]*FactorFrame
+	FrameOrder    []string `json:"frame_order"`
 }
 
 type FactorDataset struct {
 	Benchmark           string    `json:"benchmark"`
-	Timeframe           string    `json:"timeframe"`
+	Timeframes          []string  `json:"timeframes"`
 	RollingWindow       int       `json:"rolling_window"`
 	UpdatedAt           time.Time `json:"updated_at"`
 	UniverseUpdatedAt   time.Time `json:"universe_updated_at"`
@@ -102,9 +118,8 @@ type benchmarkData struct {
 }
 
 type assetResult struct {
-	Asset  *AssetSeries
-	Skip   bool
-	Reason string
+	Asset *AssetSeries
+	Skip  bool
 }
 
 type FactorService struct {
@@ -189,6 +204,7 @@ func (s *FactorService) GetDataset(ctx context.Context) (*FactorDataset, error) 
 	if err != nil {
 		return nil, err
 	}
+
 	s.datasetCached = dataset
 	s.datasetCachedAt = time.Now().UTC()
 	return dataset, nil
@@ -239,8 +255,8 @@ func (s *FactorService) refresh(ctx context.Context) (*FactorDataset, error) {
 	close(results)
 
 	dataset := &FactorDataset{
-		Benchmark:           "BTC benchmark by provider",
-		Timeframe:           "1D",
+		Benchmark:           "BTC factor benchmark",
+		Timeframes:          append([]string(nil), supportedTimeframes...),
 		RollingWindow:       s.rollingWindow,
 		UpdatedAt:           time.Now().UTC(),
 		UniverseUpdatedAt:   universeUpdatedAt,
@@ -257,7 +273,7 @@ func (s *FactorService) refresh(ctx context.Context) (*FactorDataset, error) {
 	}
 
 	if len(dataset.Order) == 0 {
-		return nil, errors.New("no assets remained after historical data and rolling-window filtering")
+		return nil, errors.New("no assets remained after factor calculation and rolling-window filtering")
 	}
 
 	sort.Slice(dataset.Order, func(i, j int) bool {
@@ -279,22 +295,26 @@ func (s *FactorService) buildAssetSeries(ctx context.Context, cfg AssetConfig, s
 			continue
 		}
 
-		instID, pairLabel, series, err := provider.FetchAssetHistory(ctx, cfg.Symbol, startDate, endDate)
+		instID, pairLabel, priceSeries, err := provider.FetchAssetHistory(ctx, cfg.Symbol, startDate, endDate)
 		if err != nil {
 			continue
 		}
 
-		dates, assetValues, benchmarkValues, err := alignPairSeries(series, benchmark.Series)
+		priceDates, assetPrices, benchmarkPrices, err := alignPairSeries(priceSeries, benchmark.Series)
 		if err != nil {
 			continue
 		}
 
-		points, err := rollingCorrelation(dates, assetValues, benchmarkValues, s.rollingWindow)
-		if err != nil || len(points) == 0 {
+		returnDates, assetReturns, benchmarkReturns, err := computeReturns(priceDates, assetPrices, benchmarkPrices)
+		if err != nil {
 			continue
 		}
 
-		latest := points[len(points)-1]
+		frame, err := buildFactorFrame("1D", returnDates, assetReturns, benchmarkReturns, s.rollingWindow)
+		if err != nil {
+			continue
+		}
+
 		return assetResult{
 			Asset: &AssetSeries{
 				Symbol:        cfg.Symbol,
@@ -304,16 +324,72 @@ func (s *FactorService) buildAssetSeries(ctx context.Context, cfg AssetConfig, s
 				BenchmarkInst: benchmark.InstID,
 				DataSource:    provider.Name(),
 				QuoteVolume:   cfg.QuoteVolume,
-				LatestTime:    latest.Time,
-				LatestValue:   latest.Value,
-				Points:        points,
+				Frames: map[string]*FactorFrame{
+					frame.Timeframe: frame,
+				},
+				FrameOrder: []string{frame.Timeframe},
 			},
 		}
 	}
 
-	return assetResult{
-		Skip:   true,
-		Reason: "all providers failed or aligned data is insufficient",
+	return assetResult{Skip: true}
+}
+
+func buildFactorFrame(timeframe string, dates []time.Time, assetReturns, benchmarkReturns []float64, window int) (*FactorFrame, error) {
+	if variance(assetReturns) < minReturnVar || variance(benchmarkReturns) < minReturnVar {
+		return nil, errors.New("return variance is too small for stable factor calculation")
+	}
+
+	corrPoints, err := rollingCorrelationPoints(dates, assetReturns, benchmarkReturns, window)
+	if err != nil {
+		return nil, err
+	}
+
+	betaPoints, betaValues, err := rollingBetaPoints(dates, assetReturns, benchmarkReturns, window)
+	if err != nil {
+		return nil, err
+	}
+
+	residualPoints, err := residualPointsFromBeta(dates, assetReturns, benchmarkReturns, betaValues, window)
+	if err != nil {
+		return nil, err
+	}
+
+	lagCorrPoints, err := rollingLagCorrelationPoints(dates, assetReturns, benchmarkReturns, window, 1)
+	if err != nil {
+		return nil, err
+	}
+
+	latestCorr := corrPoints[len(corrPoints)-1]
+	latestBeta := betaPoints[len(betaPoints)-1]
+	latestResidual := residualPoints[len(residualPoints)-1]
+	latestLagCorr := lagCorrPoints[len(lagCorrPoints)-1]
+
+	return &FactorFrame{
+		Timeframe:      timeframe,
+		LatestTime:     latestCorr.Time,
+		LatestCorr:     latestCorr.Value,
+		LatestBeta:     latestBeta.Value,
+		LatestResidual: latestResidual.Value,
+		LatestLagCorr:  latestLagCorr.Value,
+		Signal:         classifySignal(latestCorr.Value, latestBeta.Value, latestResidual.Value, latestLagCorr.Value),
+		CorrPoints:     corrPoints,
+		BetaPoints:     betaPoints,
+		ResidualPoints: residualPoints,
+		LagCorrPoints:  lagCorrPoints,
+	}, nil
+}
+
+func classifySignal(corr, beta, residual, lagCorr float64) string {
+	switch {
+	case corr < 0.3 && residual > 0:
+		return "独立强势币"
+	case lagCorr > 0.6:
+		return "BTC带动候选"
+	case beta > 1.5 && corr > 0.7:
+		return "高弹性跟随"
+	default:
+		return "常规跟随"
 	}
 }
 
@@ -342,7 +418,6 @@ func (s *FactorService) getDynamicUniverse(ctx context.Context) ([]AssetConfig, 
 	s.universeCachedList = cloneAssetConfigs(assets)
 	s.universeCachedAt = time.Now().UTC()
 	s.universeUpdatedAt = updatedAt
-
 	return cloneAssetConfigs(assets), updatedAt, nil
 }
 
@@ -677,23 +752,123 @@ func alignPairSeries(assetSeries, benchmarkSeries []dataPoint) ([]time.Time, []f
 	return dates, assetValues, benchmarkValues, nil
 }
 
-func rollingCorrelation(dates []time.Time, seriesA, seriesB []float64, window int) ([]FactorPoint, error) {
-	if len(dates) != len(seriesA) || len(seriesA) != len(seriesB) {
+func computeReturns(dates []time.Time, assetPrices, benchmarkPrices []float64) ([]time.Time, []float64, []float64, error) {
+	if len(dates) != len(assetPrices) || len(assetPrices) != len(benchmarkPrices) {
+		return nil, nil, nil, errors.New("price series length mismatch")
+	}
+	if len(dates) < 2 {
+		return nil, nil, nil, errors.New("at least two price points are required to compute returns")
+	}
+
+	returnDates := append([]time.Time(nil), dates[1:]...)
+	assetReturns := computeReturnSeries(assetPrices)
+	benchmarkReturns := computeReturnSeries(benchmarkPrices)
+	return returnDates, assetReturns, benchmarkReturns, nil
+}
+
+func computeReturnSeries(prices []float64) []float64 {
+	returns := make([]float64, 0, len(prices)-1)
+	for i := 1; i < len(prices); i++ {
+		if prices[i-1] == 0 {
+			returns = append(returns, 0)
+			continue
+		}
+		returns = append(returns, (prices[i]-prices[i-1])/prices[i-1])
+	}
+	return returns
+}
+
+func rollingCorrelationPoints(dates []time.Time, seriesA, seriesB []float64, window int) ([]FactorPoint, error) {
+	values, err := rollingCorrelationRaw(seriesA, seriesB, window)
+	if err != nil {
+		return nil, err
+	}
+	return valuesToPoints(dates, values, window), nil
+}
+
+func rollingCorrelationRaw(seriesA, seriesB []float64, window int) ([]float64, error) {
+	if len(seriesA) != len(seriesB) {
 		return nil, errors.New("series length mismatch")
 	}
 	if len(seriesA) < window {
 		return nil, fmt.Errorf("series length %d is smaller than rolling window %d", len(seriesA), window)
 	}
 
-	points := make([]FactorPoint, 0, len(seriesA)-window+1)
+	values := make([]float64, 0, len(seriesA)-window+1)
 	for end := window; end <= len(seriesA); end++ {
 		start := end - window
+		values = append(values, correlation(seriesA[start:end], seriesB[start:end]))
+	}
+	return values, nil
+}
+
+func rollingBetaPoints(dates []time.Time, assetReturns, benchmarkReturns []float64, window int) ([]FactorPoint, []float64, error) {
+	if len(assetReturns) != len(benchmarkReturns) {
+		return nil, nil, errors.New("series length mismatch")
+	}
+	if len(assetReturns) < window {
+		return nil, nil, fmt.Errorf("series length %d is smaller than rolling window %d", len(assetReturns), window)
+	}
+
+	values := make([]float64, 0, len(assetReturns)-window+1)
+	for end := window; end <= len(assetReturns); end++ {
+		start := end - window
+		cov := covariance(assetReturns[start:end], benchmarkReturns[start:end])
+		varBenchmark := variance(benchmarkReturns[start:end])
+		if varBenchmark == 0 {
+			values = append(values, 0)
+			continue
+		}
+		values = append(values, cov/varBenchmark)
+	}
+
+	return valuesToPoints(dates, values, window), values, nil
+}
+
+func residualPointsFromBeta(dates []time.Time, assetReturns, benchmarkReturns, betaValues []float64, window int) ([]FactorPoint, error) {
+	if len(assetReturns) != len(benchmarkReturns) {
+		return nil, errors.New("series length mismatch")
+	}
+	expected := len(assetReturns) - window + 1
+	if expected <= 0 || len(betaValues) != expected {
+		return nil, errors.New("beta series length mismatch")
+	}
+
+	values := make([]float64, 0, len(betaValues))
+	for i, beta := range betaValues {
+		index := i + window - 1
+		values = append(values, assetReturns[index]-beta*benchmarkReturns[index])
+	}
+	return valuesToPoints(dates, values, window), nil
+}
+
+func rollingLagCorrelationPoints(dates []time.Time, assetReturns, benchmarkReturns []float64, window, lag int) ([]FactorPoint, error) {
+	if lag <= 0 {
+		return rollingCorrelationPoints(dates, assetReturns, benchmarkReturns, window)
+	}
+	if len(assetReturns) != len(benchmarkReturns) {
+		return nil, errors.New("series length mismatch")
+	}
+	if len(assetReturns) <= lag {
+		return nil, fmt.Errorf("series length %d is not greater than lag %d", len(assetReturns), lag)
+	}
+
+	laggedAsset := append([]float64(nil), assetReturns[lag:]...)
+	leadingBenchmark := append([]float64(nil), benchmarkReturns[:len(benchmarkReturns)-lag]...)
+	lagDates := append([]time.Time(nil), dates[lag:]...)
+	return rollingCorrelationPoints(lagDates, laggedAsset, leadingBenchmark, window)
+}
+
+func valuesToPoints(dates []time.Time, values []float64, window int) []FactorPoint {
+	points := make([]FactorPoint, 0, len(values))
+	for i, value := range values {
+		dateIndex := i + window - 1
 		points = append(points, FactorPoint{
-			Time:  dates[end-1],
-			Value: correlation(seriesA[start:end], seriesB[start:end]),
+			Time:  dates[dateIndex],
+			Value: value,
 		})
 	}
-	return points, nil
+	return points
 }
 
 func correlation(a, b []float64) float64 {
@@ -711,13 +886,13 @@ func correlation(a, b []float64) float64 {
 	meanA := sumA / float64(len(a))
 	meanB := sumB / float64(len(b))
 
-	var covariance float64
+	var covarianceValue float64
 	var varianceA float64
 	var varianceB float64
 	for i := range a {
 		deltaA := a[i] - meanA
 		deltaB := b[i] - meanB
-		covariance += deltaA * deltaB
+		covarianceValue += deltaA * deltaB
 		varianceA += deltaA * deltaA
 		varianceB += deltaB * deltaB
 	}
@@ -726,11 +901,52 @@ func correlation(a, b []float64) float64 {
 		return 0
 	}
 
-	value := covariance / math.Sqrt(varianceA*varianceB)
+	value := covarianceValue / math.Sqrt(varianceA*varianceB)
 	if math.IsNaN(value) || math.IsInf(value, 0) {
 		return 0
 	}
 	return value
+}
+
+func covariance(a, b []float64) float64 {
+	if len(a) != len(b) || len(a) == 0 {
+		return 0
+	}
+
+	var sumA float64
+	var sumB float64
+	for i := range a {
+		sumA += a[i]
+		sumB += b[i]
+	}
+
+	meanA := sumA / float64(len(a))
+	meanB := sumB / float64(len(b))
+
+	var value float64
+	for i := range a {
+		value += (a[i] - meanA) * (b[i] - meanB)
+	}
+	return value / float64(len(a))
+}
+
+func variance(series []float64) float64 {
+	if len(series) == 0 {
+		return 0
+	}
+
+	var sum float64
+	for _, value := range series {
+		sum += value
+	}
+	mean := sum / float64(len(series))
+
+	var acc float64
+	for _, value := range series {
+		delta := value - mean
+		acc += delta * delta
+	}
+	return acc / float64(len(series))
 }
 
 func jsonNumberToInt64(value any) (int64, error) {

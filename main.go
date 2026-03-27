@@ -19,8 +19,8 @@ func main() {
 	service := &FactorService{
 		universeProvider:  binanceProvider,
 		providers:         []MarketDataProvider{binanceProvider, okxProvider},
-		datasetTTL:        15 * time.Minute,
-		universeTTL:       15 * time.Minute,
+		datasetTTL:        time.Hour,
+		universeTTL:       time.Hour,
 		lookbackDays:      89,
 		rollingWindow:     30,
 		minUniverseVolume: 100000000,

@@ -4,6 +4,11 @@ const windowValue = document.getElementById("windowValue");
 const factorTableBody = document.getElementById("factorTableBody");
 const errorBanner = document.getElementById("errorBanner");
 const refreshButton = document.getElementById("refreshButton");
+const factorGuideButton = document.getElementById("factorGuideButton");
+const closeGuideButton = document.getElementById("closeGuideButton");
+const guideModal = document.getElementById("guideModal");
+
+const AUTO_REFRESH_MS = 60 * 60 * 1000;
 
 function formatDateTime(value) {
   const date = new Date(value);
@@ -18,7 +23,17 @@ function formatFactor(value) {
 }
 
 function formatVolume(value) {
-  return `${(Number(value) / 1e8).toFixed(2)}亿`;
+  return `${(Number(value) / 1e8).toFixed(2)}亿 USDT`;
+}
+
+function factorClass(value) {
+  if (value > 0) {
+    return "factor-positive";
+  }
+  if (value < 0) {
+    return "factor-negative";
+  }
+  return "factor-neutral";
 }
 
 function showError(message) {
@@ -30,28 +45,108 @@ function hideError() {
   errorBanner.classList.add("hidden");
 }
 
+function openGuide() {
+  guideModal.classList.remove("hidden");
+  guideModal.setAttribute("aria-hidden", "false");
+}
+
+function closeGuide() {
+  guideModal.classList.add("hidden");
+  guideModal.setAttribute("aria-hidden", "true");
+}
+
+function createFrameRow(asset, frame, rowSpan, isFirstRow) {
+  const row = document.createElement("tr");
+  row.className = "asset-row";
+
+  if (isFirstRow) {
+    const symbolCell = document.createElement("td");
+    symbolCell.rowSpan = rowSpan;
+    symbolCell.className = "sticky-group-cell";
+    symbolCell.innerHTML = `
+      <div class="asset-cell">
+        <span class="symbol-chip" title="${asset.symbol}">${asset.display_name || asset.symbol}</span>
+        <small>${asset.symbol}</small>
+      </div>
+    `;
+    row.appendChild(symbolCell);
+
+    const metaCell = document.createElement("td");
+    metaCell.rowSpan = rowSpan;
+    metaCell.className = "sticky-group-cell";
+    metaCell.innerHTML = `
+      <div class="source-cell">
+        <strong>${asset.data_source.toUpperCase()}</strong>
+        <small>${formatVolume(asset.quote_volume)}</small>
+      </div>
+    `;
+    row.appendChild(metaCell);
+  }
+
+  const timeframeCell = document.createElement("td");
+  timeframeCell.innerHTML = `<span class="timeframe-chip">${frame.timeframe}</span>`;
+  row.appendChild(timeframeCell);
+
+  const latestTimeCell = document.createElement("td");
+  latestTimeCell.textContent = formatDateTime(frame.latest_time);
+  row.appendChild(latestTimeCell);
+
+  const corrCell = document.createElement("td");
+  corrCell.className = factorClass(frame.corr);
+  corrCell.textContent = formatFactor(frame.corr);
+  row.appendChild(corrCell);
+
+  const betaCell = document.createElement("td");
+  betaCell.className = factorClass(frame.beta);
+  betaCell.textContent = formatFactor(frame.beta);
+  row.appendChild(betaCell);
+
+  const residualCell = document.createElement("td");
+  residualCell.className = factorClass(frame.residual);
+  residualCell.textContent = formatFactor(frame.residual);
+  row.appendChild(residualCell);
+
+  const lagCorrCell = document.createElement("td");
+  lagCorrCell.className = factorClass(frame.lag_corr);
+  lagCorrCell.textContent = formatFactor(frame.lag_corr);
+  row.appendChild(lagCorrCell);
+
+  const signalCell = document.createElement("td");
+  signalCell.innerHTML = `<span class="signal-badge">${frame.signal}</span>`;
+  row.appendChild(signalCell);
+
+  row.addEventListener("click", () => {
+    window.location.href = `/detail?symbol=${encodeURIComponent(asset.symbol)}`;
+  });
+  row.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      window.location.href = `/detail?symbol=${encodeURIComponent(asset.symbol)}`;
+    }
+  });
+  row.tabIndex = 0;
+  return row;
+}
+
 function renderRows(items) {
   factorTableBody.innerHTML = "";
-  for (const item of items) {
-    const row = document.createElement("tr");
-    row.tabIndex = 0;
-    const displayName = item.display_name || item.symbol;
-    row.innerHTML = `
-      <td><span class="symbol-chip" title="${item.symbol}">${displayName}</span></td>
-      <td>${item.pair_label}<br><small>${item.data_source.toUpperCase()} | 24h成交额 ${formatVolume(item.quote_volume)}</small></td>
-      <td>${formatDateTime(item.latest_time)}</td>
-      <td class="${item.latest_value >= 0 ? "factor-positive" : "factor-negative"}">${formatFactor(item.latest_value)}</td>
+  for (const asset of items) {
+    const frames = asset.frames || [];
+    if (frames.length === 0) {
+      continue;
+    }
+
+    frames.forEach((frame, index) => {
+      factorTableBody.appendChild(createFrameRow(asset, frame, frames.length, index === 0));
+    });
+  }
+
+  if (!factorTableBody.children.length) {
+    factorTableBody.innerHTML = `
+      <tr>
+        <td colspan="9" class="loading-cell">暂无可展示数据</td>
+      </tr>
     `;
-    row.addEventListener("click", () => {
-      window.location.href = `/detail?symbol=${encodeURIComponent(item.symbol)}`;
-    });
-    row.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        window.location.href = `/detail?symbol=${encodeURIComponent(item.symbol)}`;
-      }
-    });
-    factorTableBody.appendChild(row);
   }
 }
 
@@ -60,7 +155,7 @@ async function loadOverview() {
   refreshButton.disabled = true;
   factorTableBody.innerHTML = `
     <tr>
-      <td colspan="4" class="loading-cell">正在刷新数据...</td>
+      <td colspan="9" class="loading-cell">正在刷新数据...</td>
     </tr>
   `;
 
@@ -72,7 +167,7 @@ async function loadOverview() {
     }
 
     const payload = await response.json();
-    benchmarkValue.textContent = `BTCUSDT / BTC-USDT`;
+    benchmarkValue.textContent = payload.benchmark;
     updatedAtValue.textContent = `${formatDateTime(payload.updated_at)} | 标的池 ${formatDateTime(payload.universe_updated_at)}`;
     windowValue.textContent = `${payload.rolling_window} Days | ${payload.asset_count} Symbols`;
     renderRows(payload.items || []);
@@ -80,7 +175,7 @@ async function loadOverview() {
     showError(error.message || "加载失败");
     factorTableBody.innerHTML = `
       <tr>
-        <td colspan="4" class="loading-cell">暂无可展示数据</td>
+        <td colspan="9" class="loading-cell">暂无可展示数据</td>
       </tr>
     `;
   } finally {
@@ -88,5 +183,19 @@ async function loadOverview() {
   }
 }
 
+factorGuideButton.addEventListener("click", openGuide);
+closeGuideButton.addEventListener("click", closeGuide);
+guideModal.addEventListener("click", (event) => {
+  if (event.target.dataset.closeModal === "true") {
+    closeGuide();
+  }
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !guideModal.classList.contains("hidden")) {
+    closeGuide();
+  }
+});
 refreshButton.addEventListener("click", loadOverview);
+
 loadOverview();
+setInterval(loadOverview, AUTO_REFRESH_MS);

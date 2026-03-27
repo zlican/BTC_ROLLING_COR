@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>标的 1D 滚动因子详情</title>
+  <title>收益率四因子详情</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">
@@ -26,8 +26,8 @@
           <strong id="detailLatestTime">-</strong>
         </div>
         <div class="meta-item">
-          <span class="meta-label">最新 1D 值</span>
-          <strong id="detailLatestValue">-</strong>
+          <span class="meta-label">最新信号</span>
+          <strong id="detailSignal">-</strong>
         </div>
         <div class="meta-item">
           <span class="meta-label">更新时间</span>
@@ -40,10 +40,24 @@
       <div class="panel-head">
         <div>
           <p class="panel-kicker">Sub Page</p>
-          <h2>ECharts 历史序列</h2>
+          <h2>时间周期与四因子图表</h2>
         </div>
       </div>
+
+      <div class="toolbar-block">
+        <div>
+          <p class="toolbar-label">时间周期</p>
+          <div id="timeframeTabs" class="pill-group"></div>
+        </div>
+        <div>
+          <p class="toolbar-label">因子切换</p>
+          <div id="factorTabs" class="pill-group"></div>
+        </div>
+      </div>
+
       <div id="detailErrorBanner" class="error-banner hidden"></div>
+
+      <div id="factorCards" class="metric-grid"></div>
       <div id="chart" class="chart-canvas"></div>
     </section>
   </main>
