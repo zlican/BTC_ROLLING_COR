@@ -47,6 +47,13 @@
         </div>
       </div>
 
+      <div class="search-row">
+        <label class="search-field" for="symbolSearchInput">
+          <span class="toolbar-label">搜索标的</span>
+          <input id="symbolSearchInput" class="search-input" type="search" placeholder="输入标的名称或代码，支持模糊匹配" autocomplete="off">
+        </label>
+      </div>
+
       <div class="toolbar-block overview-toolbar">
         <div>
           <p class="toolbar-label">周期面板</p>
@@ -60,7 +67,15 @@
         <table class="factor-table factor-matrix">
           <thead>
             <tr>
-              <th>标的</th>
+              <th>
+                <div class="sortable-head">
+                  <span>标的</span>
+                  <span class="sort-buttons">
+                    <button class="sort-button" type="button" data-sort-field="symbol" data-sort-order="asc">A</button>
+                    <button class="sort-button" type="button" data-sort-field="symbol" data-sort-order="desc">Z</button>
+                  </span>
+                </div>
+              </th>
               <th>
                 <div class="sortable-head">
                   <span>8H涨跌幅</span>
@@ -134,7 +149,7 @@
         <article class="guide-item">
           <h4>Corr</h4>
           <p>衡量收益率是否跟随 BTC，同步性越高，越像 BTC 的影子。</p>
-          <p class="guide-note">常见解读：`corr &lt; 0.3` 更接近独立行情。</p>
+          <p class="guide-note">常见解读：`corr &lt; 0.75` 可能出现独立行情。</p>
         </article>
         <article class="guide-item">
           <h4>Beta</h4>

@@ -7,6 +7,7 @@ const refreshButton = document.getElementById("refreshButton");
 const factorGuideButton = document.getElementById("factorGuideButton");
 const closeGuideButton = document.getElementById("closeGuideButton");
 const guideModal = document.getElementById("guideModal");
+const symbolSearchInput = document.getElementById("symbolSearchInput");
 const sortButtons = Array.from(document.querySelectorAll(".sort-button"));
 const timeframeBoards = document.getElementById("timeframeBoards");
 
@@ -17,6 +18,7 @@ let overviewItems = [];
 let availableTimeframes = [...FALLBACK_TIMEFRAMES];
 let activeTimeframe = "1D";
 let sortState = { field: null, order: null };
+let searchKeyword = "";
 
 function formatDateTime(value) {
   const date = new Date(value);
@@ -66,6 +68,17 @@ function closeGuide() {
 function getFrame(asset, timeframe = activeTimeframe) {
   const frames = asset.frames || [];
   return frames.find((frame) => frame.timeframe === timeframe) || null;
+}
+
+function matchesSearch(asset) {
+  const keyword = searchKeyword.trim().toUpperCase();
+  if (!keyword) {
+    return true;
+  }
+
+  const displayName = String(asset.display_name || "").toUpperCase();
+  const symbol = String(asset.symbol || "").toUpperCase();
+  return displayName.includes(keyword) || symbol.includes(keyword);
 }
 
 function renderBoardTabs() {
@@ -124,6 +137,10 @@ function createRow(asset, frame) {
 }
 
 function getSortMetric(asset, field) {
+  if (field === "symbol") {
+    return String(asset.display_name || asset.symbol || "").toUpperCase();
+  }
+
   if (field === "eight_hour_pct") {
     return Number(asset.eight_hour_pct || 0);
   }
@@ -136,7 +153,7 @@ function getSortMetric(asset, field) {
 }
 
 function getSortedItems(items) {
-  const visible = items.filter((asset) => getFrame(asset));
+  const visible = items.filter((asset) => getFrame(asset) && matchesSearch(asset));
   if (!sortState.field || !sortState.order) {
     return visible;
   }
@@ -144,6 +161,15 @@ function getSortedItems(items) {
   return [...visible].sort((left, right) => {
     const leftValue = getSortMetric(left, sortState.field);
     const rightValue = getSortMetric(right, sortState.field);
+
+    if (sortState.field === "symbol") {
+      const compare = String(leftValue).localeCompare(String(rightValue));
+      if (compare === 0) {
+        return left.symbol.localeCompare(right.symbol);
+      }
+      return sortState.order === "desc" ? -compare : compare;
+    }
+
     if (leftValue === rightValue) {
       return left.symbol.localeCompare(right.symbol);
     }
@@ -171,7 +197,7 @@ function renderRows(items) {
   if (!factorTableBody.children.length) {
     factorTableBody.innerHTML = `
       <tr>
-        <td colspan="8" class="loading-cell">${activeTimeframe} 面板暂无可展示数据</td>
+        <td colspan="8" class="loading-cell">${activeTimeframe} 面板暂无匹配标的</td>
       </tr>
     `;
   }
@@ -242,6 +268,10 @@ for (const button of sortButtons) {
     renderRows(overviewItems);
   });
 }
+symbolSearchInput.addEventListener("input", (event) => {
+  searchKeyword = event.target.value || "";
+  renderRows(overviewItems);
+});
 
 loadOverview();
 setInterval(loadOverview, AUTO_REFRESH_MS);
