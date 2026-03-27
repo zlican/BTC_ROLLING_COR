@@ -37,13 +37,17 @@ type OverviewAssetItem struct {
 }
 
 type OverviewFrameItem struct {
-	Timeframe  string  `json:"timeframe"`
-	LatestTime string  `json:"latest_time"`
-	Corr       float64 `json:"corr"`
-	Beta       float64 `json:"beta"`
-	Residual   float64 `json:"residual"`
-	LagCorr    float64 `json:"lag_corr"`
-	Signal     string  `json:"signal"`
+	Timeframe     string  `json:"timeframe"`
+	InstID        string  `json:"inst_id"`
+	PairLabel     string  `json:"pair_label"`
+	BenchmarkInst string  `json:"benchmark_inst"`
+	DataSource    string  `json:"data_source"`
+	LatestTime    string  `json:"latest_time"`
+	Corr          float64 `json:"corr"`
+	Beta          float64 `json:"beta"`
+	Residual      float64 `json:"residual"`
+	LagCorr       float64 `json:"lag_corr"`
+	Signal        string  `json:"signal"`
 }
 
 type DetailResponse struct {
@@ -68,6 +72,10 @@ type DetailAssetOutput struct {
 
 type DetailFrameOutput struct {
 	Timeframe      string        `json:"timeframe"`
+	InstID         string        `json:"inst_id"`
+	PairLabel      string        `json:"pair_label"`
+	BenchmarkInst  string        `json:"benchmark_inst"`
+	DataSource     string        `json:"data_source"`
 	LatestTime     string        `json:"latest_time"`
 	Corr           float64       `json:"corr"`
 	Beta           float64       `json:"beta"`
@@ -128,13 +136,17 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		for _, timeframe := range asset.FrameOrder {
 			frame := asset.Frames[timeframe]
 			frames = append(frames, OverviewFrameItem{
-				Timeframe:  frame.Timeframe,
-				LatestTime: frame.LatestTime.Format(timeLayout),
-				Corr:       frame.LatestCorr,
-				Beta:       frame.LatestBeta,
-				Residual:   frame.LatestResidual,
-				LagCorr:    frame.LatestLagCorr,
-				Signal:     frame.Signal,
+				Timeframe:     frame.Timeframe,
+				InstID:        frame.InstID,
+				PairLabel:     frame.PairLabel,
+				BenchmarkInst: frame.BenchmarkInst,
+				DataSource:    frame.DataSource,
+				LatestTime:    frame.LatestTime.Format(timeLayout),
+				Corr:          frame.LatestCorr,
+				Beta:          frame.LatestBeta,
+				Residual:      frame.LatestResidual,
+				LagCorr:       frame.LatestLagCorr,
+				Signal:        frame.Signal,
 			})
 		}
 
@@ -184,6 +196,10 @@ func (s *Server) handleDetail(w http.ResponseWriter, r *http.Request) {
 		frame := asset.Frames[timeframe]
 		frames = append(frames, DetailFrameOutput{
 			Timeframe:      frame.Timeframe,
+			InstID:         frame.InstID,
+			PairLabel:      frame.PairLabel,
+			BenchmarkInst:  frame.BenchmarkInst,
+			DataSource:     frame.DataSource,
 			LatestTime:     frame.LatestTime.Format(timeLayout),
 			Corr:           frame.LatestCorr,
 			Beta:           frame.LatestBeta,

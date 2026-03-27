@@ -22,9 +22,23 @@ let detailPayload;
 let selectedTimeframe;
 let selectedFactor = "corr";
 
-function getSymbol() {
+function getQueryParam(key) {
   const params = new URLSearchParams(window.location.search);
-  return (params.get("symbol") || "").toUpperCase();
+  return params.get(key) || "";
+}
+
+function getSymbol() {
+  return getQueryParam("symbol").toUpperCase();
+}
+
+function getRequestedTimeframe() {
+  return getQueryParam("timeframe").toUpperCase();
+}
+
+function setTimeframeQuery(timeframe) {
+  const url = new URL(window.location.href);
+  url.searchParams.set("timeframe", timeframe);
+  window.history.replaceState({}, "", url);
 }
 
 function formatDateTime(value) {
@@ -37,10 +51,6 @@ function formatDateTime(value) {
 
 function formatFactor(value) {
   return Number(value).toFixed(4);
-}
-
-function formatVolume(value) {
-  return `${(Number(value) / 1e8).toFixed(2)}亿 USDT`;
 }
 
 function formatPct(value) {
@@ -72,6 +82,7 @@ function renderTimeframeTabs() {
     button.textContent = frame.timeframe;
     button.addEventListener("click", () => {
       selectedTimeframe = frame.timeframe;
+      setTimeframeQuery(frame.timeframe);
       render();
     });
     timeframeTabs.appendChild(button);
@@ -129,7 +140,7 @@ function renderHeader() {
   }
 
   detailTitle.textContent = `${detailPayload.asset.display_name || detailPayload.asset.symbol} ${frame.timeframe} 四因子详情`;
-  detailSubtitle.textContent = `${detailPayload.asset.pair_label} | 数据源 ${detailPayload.asset.data_source.toUpperCase()} | 8H 涨跌幅 ${formatPct(detailPayload.asset.eight_hour_pct)} | 当前图表 ${factorMap[selectedFactor].label}`;
+  detailSubtitle.textContent = `${frame.pair_label} | 数据源 ${(frame.data_source || detailPayload.asset.data_source || "-").toUpperCase()} | 基准 ${frame.benchmark_inst} | 8H 涨跌幅 ${formatPct(detailPayload.asset.eight_hour_pct)} | 当前图表 ${factorMap[selectedFactor].label}`;
   detailLatestTime.textContent = formatDateTime(frame.latest_time);
   detailSignal.textContent = frame.signal;
   detailUpdatedAt.textContent = formatDateTime(detailPayload.updated_at);
@@ -232,7 +243,12 @@ async function loadDetail() {
     }
 
     detailPayload = await response.json();
-    selectedTimeframe = detailPayload.asset.frames[0]?.timeframe || "1D";
+    const requestedTimeframe = getRequestedTimeframe();
+    selectedTimeframe = detailPayload.asset.frames.find((frame) => frame.timeframe === requestedTimeframe)?.timeframe
+      || detailPayload.asset.frames.find((frame) => frame.timeframe === "1D")?.timeframe
+      || detailPayload.asset.frames[0]?.timeframe
+      || "1D";
+    setTimeframeQuery(selectedTimeframe);
     render();
   } catch (error) {
     showError(error.message || "加载失败");

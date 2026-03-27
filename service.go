@@ -23,15 +23,44 @@ const (
 	okxHistoryCandlesURL = "https://www.okx.com/api/v5/market/history-candles"
 	defaultProxyURL      = "http://127.0.0.1:10809"
 
-	binanceInterval  = "1d"
-	okxTimeframe     = "1Dutc"
-	requestTimeout   = 20 * time.Second
-	pageLimit        = 100
-	binanceKlineSize = 150
-	minReturnVar     = 1e-10
+	requestTimeout = 20 * time.Second
+	pageLimit      = 100
+	minReturnVar   = 1e-10
 )
 
-var supportedTimeframes = []string{"1D"}
+type TimeframeConfig struct {
+	Name            string
+	BinanceInterval string
+	OKXBar          string
+	CandleDuration  time.Duration
+	HistoryBars     int
+}
+
+var timeframeConfigs = map[string]TimeframeConfig{
+	"4H": {
+		Name:            "4H",
+		BinanceInterval: "4h",
+		OKXBar:          "4H",
+		CandleDuration:  4 * time.Hour,
+		HistoryBars:     240,
+	},
+	"1D": {
+		Name:            "1D",
+		BinanceInterval: "1d",
+		OKXBar:          "1Dutc",
+		CandleDuration:  24 * time.Hour,
+		HistoryBars:     120,
+	},
+	"1W": {
+		Name:            "1W",
+		BinanceInterval: "1w",
+		OKXBar:          "1Wutc",
+		CandleDuration:  7 * 24 * time.Hour,
+		HistoryBars:     104,
+	},
+}
+
+var supportedTimeframes = []string{"4H", "1D", "1W"}
 
 type AssetConfig struct {
 	Symbol       string
@@ -49,6 +78,10 @@ type FactorPoint struct {
 
 type FactorFrame struct {
 	Timeframe      string        `json:"timeframe"`
+	InstID         string        `json:"inst_id"`
+	PairLabel      string        `json:"pair_label"`
+	BenchmarkInst  string        `json:"benchmark_inst"`
+	DataSource     string        `json:"data_source"`
 	LatestTime     time.Time     `json:"latest_time"`
 	LatestCorr     float64       `json:"latest_corr"`
 	LatestBeta     float64       `json:"latest_beta"`
@@ -104,8 +137,8 @@ type binanceTickerItem struct {
 
 type MarketDataProvider interface {
 	Name() string
-	FetchBenchmarkHistory(ctx context.Context, startDate, endDate time.Time) (string, []dataPoint, error)
-	FetchAssetHistory(ctx context.Context, symbol string, startDate, endDate time.Time) (string, string, []dataPoint, error)
+	FetchBenchmarkHistory(ctx context.Context, timeframe TimeframeConfig, startDate, endDate time.Time) (string, []dataPoint, error)
+	FetchAssetHistory(ctx context.Context, symbol string, timeframe TimeframeConfig, startDate, endDate time.Time) (string, string, []dataPoint, error)
 }
 
 type BinanceProvider struct {
@@ -131,7 +164,6 @@ type FactorService struct {
 	providers         []MarketDataProvider
 	datasetTTL        time.Duration
 	universeTTL       time.Duration
-	lookbackDays      int
 	rollingWindow     int
 	minUniverseVolume float64
 
@@ -223,21 +255,26 @@ func (s *FactorService) refresh(ctx context.Context) (*FactorDataset, error) {
 		return nil, errors.New("dynamic universe is empty after filtering")
 	}
 
-	endDate := time.Now().UTC().Truncate(24 * time.Hour)
-	startDate := endDate.AddDate(0, 0, -s.lookbackDays)
-
-	benchmarks := make(map[string]benchmarkData, len(s.providers))
+	benchmarkSets := make(map[string]map[string]benchmarkData, len(s.providers))
 	for _, provider := range s.providers {
-		instID, series, fetchErr := provider.FetchBenchmarkHistory(ctx, startDate, endDate)
-		if fetchErr != nil {
-			continue
+		frames := make(map[string]benchmarkData, len(supportedTimeframes))
+		for _, timeframeName := range supportedTimeframes {
+			cfg := timeframeConfigs[timeframeName]
+			startDate, endDate := timeframeRange(cfg)
+			instID, series, fetchErr := provider.FetchBenchmarkHistory(ctx, cfg, startDate, endDate)
+			if fetchErr != nil {
+				continue
+			}
+			frames[timeframeName] = benchmarkData{
+				InstID: instID,
+				Series: series,
+			}
 		}
-		benchmarks[provider.Name()] = benchmarkData{
-			InstID: instID,
-			Series: series,
+		if len(frames) > 0 {
+			benchmarkSets[provider.Name()] = frames
 		}
 	}
-	if len(benchmarks) == 0 {
+	if len(benchmarkSets) == 0 {
 		return nil, errors.New("failed to fetch benchmark history from all providers")
 	}
 
@@ -251,7 +288,7 @@ func (s *FactorService) refresh(ctx context.Context) (*FactorDataset, error) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			results <- s.buildAssetSeries(ctx, cfg, startDate, endDate, benchmarks)
+			results <- s.buildAssetSeries(ctx, cfg, benchmarkSets)
 		}(asset)
 	}
 
@@ -292,110 +329,85 @@ func (s *FactorService) refresh(ctx context.Context) (*FactorDataset, error) {
 	return dataset, nil
 }
 
-func (s *FactorService) buildAssetSeries(ctx context.Context, cfg AssetConfig, startDate, endDate time.Time, benchmarks map[string]benchmarkData) assetResult {
-	for _, provider := range s.providers {
-		benchmark, ok := benchmarks[provider.Name()]
-		if !ok {
-			continue
-		}
+func (s *FactorService) buildAssetSeries(ctx context.Context, cfg AssetConfig, benchmarkSets map[string]map[string]benchmarkData) assetResult {
+	frames := make(map[string]*FactorFrame, len(supportedTimeframes))
+	frameOrder := make([]string, 0, len(supportedTimeframes))
 
-		instID, pairLabel, priceSeries, err := provider.FetchAssetHistory(ctx, cfg.Symbol, startDate, endDate)
-		if err != nil {
-			continue
-		}
+	for _, timeframeName := range supportedTimeframes {
+		cfgTimeframe := timeframeConfigs[timeframeName]
+		startDate, endDate := timeframeRange(cfgTimeframe)
 
-		priceDates, assetPrices, benchmarkPrices, err := alignPairSeries(priceSeries, benchmark.Series)
-		if err != nil {
-			continue
-		}
+		for _, provider := range s.providers {
+			benchmarkFrames, ok := benchmarkSets[provider.Name()]
+			if !ok {
+				continue
+			}
+			benchmark, ok := benchmarkFrames[timeframeName]
+			if !ok {
+				continue
+			}
 
-		returnDates, assetReturns, benchmarkReturns, err := computeReturns(priceDates, assetPrices, benchmarkPrices)
-		if err != nil {
-			continue
-		}
+			instID, pairLabel, priceSeries, err := provider.FetchAssetHistory(ctx, cfg.Symbol, cfgTimeframe, startDate, endDate)
+			if err != nil {
+				continue
+			}
 
-		frame, err := buildFactorFrame("1D", returnDates, assetReturns, benchmarkReturns, s.rollingWindow)
-		if err != nil {
-			continue
-		}
+			priceDates, assetPrices, benchmarkPrices, err := alignPairSeries(priceSeries, benchmark.Series)
+			if err != nil {
+				continue
+			}
 
-		return assetResult{
-			Asset: &AssetSeries{
-				Symbol:        cfg.Symbol,
-				DisplayName:   cfg.DisplayName,
-				InstID:        instID,
-				PairLabel:     pairLabel,
-				BenchmarkInst: benchmark.InstID,
-				DataSource:    provider.Name(),
-				QuoteVolume:   cfg.QuoteVolume,
-				EightHourPct:  cfg.EightHourPct,
-				Frames: map[string]*FactorFrame{
-					frame.Timeframe: frame,
-				},
-				FrameOrder: []string{frame.Timeframe},
-			},
+			returnDates, assetReturns, benchmarkReturns, err := computeReturns(priceDates, assetPrices, benchmarkPrices)
+			if err != nil {
+				continue
+			}
+
+			frame, err := buildFactorFrame(cfgTimeframe.Name, returnDates, assetReturns, benchmarkReturns, s.rollingWindow)
+			if err != nil {
+				continue
+			}
+
+			frame.InstID = instID
+			frame.PairLabel = pairLabel
+			frame.BenchmarkInst = benchmark.InstID
+			frame.DataSource = provider.Name()
+			frames[timeframeName] = frame
+			frameOrder = append(frameOrder, timeframeName)
+			break
 		}
 	}
 
-	return assetResult{Skip: true}
+	if len(frameOrder) == 0 {
+		return assetResult{Skip: true}
+	}
+
+	primaryFrame := pickPrimaryFrame(frames)
+	return assetResult{
+		Asset: &AssetSeries{
+			Symbol:        cfg.Symbol,
+			DisplayName:   cfg.DisplayName,
+			InstID:        primaryFrame.InstID,
+			PairLabel:     primaryFrame.PairLabel,
+			BenchmarkInst: primaryFrame.BenchmarkInst,
+			DataSource:    primaryFrame.DataSource,
+			QuoteVolume:   cfg.QuoteVolume,
+			EightHourPct:  cfg.EightHourPct,
+			Frames:        frames,
+			FrameOrder:    frameOrder,
+		},
+	}
 }
 
-func buildFactorFrame(timeframe string, dates []time.Time, assetReturns, benchmarkReturns []float64, window int) (*FactorFrame, error) {
-	if variance(assetReturns) < minReturnVar || variance(benchmarkReturns) < minReturnVar {
-		return nil, errors.New("return variance is too small for stable factor calculation")
+func pickPrimaryFrame(frames map[string]*FactorFrame) *FactorFrame {
+	for _, timeframeName := range []string{"1D", "4H", "1W"} {
+		if frame, ok := frames[timeframeName]; ok {
+			return frame
+		}
 	}
-
-	corrPoints, err := rollingCorrelationPoints(dates, assetReturns, benchmarkReturns, window)
-	if err != nil {
-		return nil, err
+	for _, frame := range frames {
+		return frame
 	}
-
-	betaPoints, betaValues, err := rollingBetaPoints(dates, assetReturns, benchmarkReturns, window)
-	if err != nil {
-		return nil, err
-	}
-
-	residualPoints, err := residualPointsFromBeta(dates, assetReturns, benchmarkReturns, betaValues, window)
-	if err != nil {
-		return nil, err
-	}
-
-	lagCorrPoints, err := rollingLagCorrelationPoints(dates, assetReturns, benchmarkReturns, window, 1)
-	if err != nil {
-		return nil, err
-	}
-
-	latestCorr := corrPoints[len(corrPoints)-1]
-	latestBeta := betaPoints[len(betaPoints)-1]
-	latestResidual := residualPoints[len(residualPoints)-1]
-	latestLagCorr := lagCorrPoints[len(lagCorrPoints)-1]
-
-	return &FactorFrame{
-		Timeframe:      timeframe,
-		LatestTime:     latestCorr.Time,
-		LatestCorr:     latestCorr.Value,
-		LatestBeta:     latestBeta.Value,
-		LatestResidual: latestResidual.Value,
-		LatestLagCorr:  latestLagCorr.Value,
-		Signal:         classifySignal(latestCorr.Value, latestBeta.Value, latestResidual.Value, latestLagCorr.Value),
-		CorrPoints:     corrPoints,
-		BetaPoints:     betaPoints,
-		ResidualPoints: residualPoints,
-		LagCorrPoints:  lagCorrPoints,
-	}, nil
-}
-
-func classifySignal(corr, beta, residual, lagCorr float64) string {
-	switch {
-	case corr < 0.3 && residual > 0:
-		return "独立强势币"
-	case lagCorr > 0.6:
-		return "BTC带动候选"
-	case beta > 1.5 && corr > 0.7:
-		return "高弹性跟随"
-	default:
-		return "常规跟随"
-	}
+	return &FactorFrame{}
 }
 
 func (s *FactorService) getDynamicUniverse(ctx context.Context) ([]AssetConfig, time.Time, error) {
@@ -592,23 +604,23 @@ func (p *BinanceProvider) fetchEightHourChange(ctx context.Context, symbol strin
 	return (lastPrice - openPrice) / openPrice * 100, nil
 }
 
-func (p *BinanceProvider) FetchBenchmarkHistory(ctx context.Context, startDate, endDate time.Time) (string, []dataPoint, error) {
-	series, err := p.fetchKlines(ctx, "BTCUSDT", startDate, endDate)
+func (p *BinanceProvider) FetchBenchmarkHistory(ctx context.Context, timeframe TimeframeConfig, startDate, endDate time.Time) (string, []dataPoint, error) {
+	series, err := p.fetchKlines(ctx, "BTCUSDT", timeframe, startDate, endDate)
 	if err != nil {
 		return "", nil, err
 	}
 	return "BTCUSDT", series, nil
 }
 
-func (p *BinanceProvider) FetchAssetHistory(ctx context.Context, symbol string, startDate, endDate time.Time) (string, string, []dataPoint, error) {
-	series, err := p.fetchKlines(ctx, symbol, startDate, endDate)
+func (p *BinanceProvider) FetchAssetHistory(ctx context.Context, symbol string, timeframe TimeframeConfig, startDate, endDate time.Time) (string, string, []dataPoint, error) {
+	series, err := p.fetchKlines(ctx, symbol, timeframe, startDate, endDate)
 	if err != nil {
 		return "", "", nil, err
 	}
 	return symbol, fmt.Sprintf("%s vs BTCUSDT", symbol), series, nil
 }
 
-func (p *BinanceProvider) fetchKlines(ctx context.Context, symbol string, startDate, endDate time.Time) ([]dataPoint, error) {
+func (p *BinanceProvider) fetchKlines(ctx context.Context, symbol string, timeframe TimeframeConfig, startDate, endDate time.Time) ([]dataPoint, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, binanceKlinesURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build binance klines request: %w", err)
@@ -616,10 +628,10 @@ func (p *BinanceProvider) fetchKlines(ctx context.Context, symbol string, startD
 
 	query := req.URL.Query()
 	query.Set("symbol", symbol)
-	query.Set("interval", binanceInterval)
-	query.Set("limit", strconv.Itoa(binanceKlineSize))
+	query.Set("interval", timeframe.BinanceInterval)
+	query.Set("limit", strconv.Itoa(timeframe.HistoryBars+16))
 	query.Set("startTime", strconv.FormatInt(startDate.UnixMilli(), 10))
-	query.Set("endTime", strconv.FormatInt(endDate.Add(24*time.Hour-time.Millisecond).UnixMilli(), 10))
+	query.Set("endTime", strconv.FormatInt(endDate.UnixMilli(), 10))
 	req.URL.RawQuery = query.Encode()
 
 	resp, err := p.client.Do(req)
@@ -665,7 +677,7 @@ func (p *BinanceProvider) fetchKlines(ctx context.Context, symbol string, startD
 	}
 
 	if len(candles) == 0 {
-		return nil, fmt.Errorf("no binance klines returned for %s", symbol)
+		return nil, fmt.Errorf("no binance klines returned for %s %s", symbol, timeframe.Name)
 	}
 
 	sort.Slice(candles, func(i, j int) bool {
@@ -678,15 +690,15 @@ func (p *OKXProvider) Name() string {
 	return "okx"
 }
 
-func (p *OKXProvider) FetchBenchmarkHistory(ctx context.Context, startDate, endDate time.Time) (string, []dataPoint, error) {
-	series, err := p.fetchHistoricalData(ctx, "BTC-USDT", startDate, endDate)
+func (p *OKXProvider) FetchBenchmarkHistory(ctx context.Context, timeframe TimeframeConfig, startDate, endDate time.Time) (string, []dataPoint, error) {
+	series, err := p.fetchHistoricalData(ctx, "BTC-USDT", timeframe, startDate, endDate)
 	if err != nil {
 		return "", nil, err
 	}
 	return "BTC-USDT", series, nil
 }
 
-func (p *OKXProvider) FetchAssetHistory(ctx context.Context, symbol string, startDate, endDate time.Time) (string, string, []dataPoint, error) {
+func (p *OKXProvider) FetchAssetHistory(ctx context.Context, symbol string, timeframe TimeframeConfig, startDate, endDate time.Time) (string, string, []dataPoint, error) {
 	if !strings.HasSuffix(symbol, "USDT") {
 		return "", "", nil, fmt.Errorf("unsupported OKX symbol %s", symbol)
 	}
@@ -697,14 +709,14 @@ func (p *OKXProvider) FetchAssetHistory(ctx context.Context, symbol string, star
 	}
 
 	instID := base + "-USDT"
-	series, err := p.fetchHistoricalData(ctx, instID, startDate, endDate)
+	series, err := p.fetchHistoricalData(ctx, instID, timeframe, startDate, endDate)
 	if err != nil {
 		return "", "", nil, err
 	}
 	return instID, fmt.Sprintf("%s vs BTC-USDT", instID), series, nil
 }
 
-func (p *OKXProvider) fetchHistoricalData(ctx context.Context, instID string, startDate, endDate time.Time) ([]dataPoint, error) {
+func (p *OKXProvider) fetchHistoricalData(ctx context.Context, instID string, timeframe TimeframeConfig, startDate, endDate time.Time) ([]dataPoint, error) {
 	var candles []dataPoint
 	var cursor string
 
@@ -716,7 +728,7 @@ func (p *OKXProvider) fetchHistoricalData(ctx context.Context, instID string, st
 
 		query := req.URL.Query()
 		query.Set("instId", instID)
-		query.Set("bar", okxTimeframe)
+		query.Set("bar", timeframe.OKXBar)
 		query.Set("limit", strconv.Itoa(pageLimit))
 		if cursor != "" {
 			query.Set("after", cursor)
@@ -784,13 +796,39 @@ func (p *OKXProvider) fetchHistoricalData(ctx context.Context, instID string, st
 	}
 
 	if len(candles) == 0 {
-		return nil, fmt.Errorf("no OKX candles returned for %s", instID)
+		return nil, fmt.Errorf("no OKX candles returned for %s %s", instID, timeframe.Name)
 	}
 
 	sort.Slice(candles, func(i, j int) bool {
 		return candles[i].Time.Before(candles[j].Time)
 	})
 	return deduplicateSeries(candles), nil
+}
+
+func timeframeRange(cfg TimeframeConfig) (time.Time, time.Time) {
+	endDate := timeframeCompletedBoundary(cfg, time.Now().UTC())
+	startDate := endDate.Add(-time.Duration(cfg.HistoryBars-1) * cfg.CandleDuration)
+	return startDate, endDate
+}
+
+func timeframeCompletedBoundary(cfg TimeframeConfig, now time.Time) time.Time {
+	now = now.UTC()
+
+	switch cfg.Name {
+	case "4H":
+		current := time.Date(now.Year(), now.Month(), now.Day(), (now.Hour()/4)*4, 0, 0, 0, time.UTC)
+		return current.Add(-4 * time.Hour)
+	case "1D":
+		startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+		return startOfDay.Add(-24 * time.Hour)
+	case "1W":
+		startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+		offset := (int(startOfDay.Weekday()) + 6) % 7
+		startOfWeek := startOfDay.AddDate(0, 0, -offset)
+		return startOfWeek.AddDate(0, 0, -7)
+	default:
+		return now.Truncate(cfg.CandleDuration).Add(-cfg.CandleDuration)
+	}
 }
 
 func deduplicateSeries(items []dataPoint) []dataPoint {
@@ -811,6 +849,64 @@ func deduplicateSeries(items []dataPoint) []dataPoint {
 		return out[i].Time.Before(out[j].Time)
 	})
 	return out
+}
+
+func buildFactorFrame(timeframe string, dates []time.Time, assetReturns, benchmarkReturns []float64, window int) (*FactorFrame, error) {
+	if variance(assetReturns) < minReturnVar || variance(benchmarkReturns) < minReturnVar {
+		return nil, errors.New("return variance is too small for stable factor calculation")
+	}
+
+	corrPoints, err := rollingCorrelationPoints(dates, assetReturns, benchmarkReturns, window)
+	if err != nil {
+		return nil, err
+	}
+
+	betaPoints, betaValues, err := rollingBetaPoints(dates, assetReturns, benchmarkReturns, window)
+	if err != nil {
+		return nil, err
+	}
+
+	residualPoints, err := residualPointsFromBeta(dates, assetReturns, benchmarkReturns, betaValues, window)
+	if err != nil {
+		return nil, err
+	}
+
+	lagCorrPoints, err := rollingLagCorrelationPoints(dates, assetReturns, benchmarkReturns, window, 1)
+	if err != nil {
+		return nil, err
+	}
+
+	latestCorr := corrPoints[len(corrPoints)-1]
+	latestBeta := betaPoints[len(betaPoints)-1]
+	latestResidual := residualPoints[len(residualPoints)-1]
+	latestLagCorr := lagCorrPoints[len(lagCorrPoints)-1]
+
+	return &FactorFrame{
+		Timeframe:      timeframe,
+		LatestTime:     latestCorr.Time,
+		LatestCorr:     latestCorr.Value,
+		LatestBeta:     latestBeta.Value,
+		LatestResidual: latestResidual.Value,
+		LatestLagCorr:  latestLagCorr.Value,
+		Signal:         classifySignal(latestCorr.Value, latestBeta.Value, latestResidual.Value, latestLagCorr.Value),
+		CorrPoints:     corrPoints,
+		BetaPoints:     betaPoints,
+		ResidualPoints: residualPoints,
+		LagCorrPoints:  lagCorrPoints,
+	}, nil
+}
+
+func classifySignal(corr, beta, residual, lagCorr float64) string {
+	switch {
+	case corr < 0.3 && residual > 0:
+		return "独立强势币"
+	case lagCorr > 0.6:
+		return "BTC带动候选"
+	case beta > 1.5 && corr > 0.7:
+		return "高弹性跟随"
+	default:
+		return "常规跟随"
+	}
 }
 
 func alignPairSeries(assetSeries, benchmarkSeries []dataPoint) ([]time.Time, []float64, []float64, error) {

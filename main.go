@@ -21,7 +21,6 @@ func main() {
 		providers:         []MarketDataProvider{binanceProvider, okxProvider},
 		datasetTTL:        time.Hour,
 		universeTTL:       time.Hour,
-		lookbackDays:      89,
 		rollingWindow:     30,
 		minUniverseVolume: 100000000,
 	}

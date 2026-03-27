@@ -282,6 +282,7 @@ body {
 }
 
 .symbol-chip,
+.source-badge,
 .timeframe-chip,
 .signal-badge {
   display: inline-flex;
@@ -302,6 +303,12 @@ body {
   min-width: auto;
   background: rgba(47, 125, 106, 0.12);
   color: #1f5e50;
+}
+
+.source-badge {
+  min-width: auto;
+  background: rgba(92, 122, 143, 0.14);
+  color: #26485d;
 }
 
 .signal-badge {
@@ -344,6 +351,10 @@ body {
   gap: 18px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   margin-bottom: 18px;
+}
+
+.overview-toolbar {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .pill-group {

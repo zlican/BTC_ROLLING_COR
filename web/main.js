@@ -8,10 +8,14 @@ const factorGuideButton = document.getElementById("factorGuideButton");
 const closeGuideButton = document.getElementById("closeGuideButton");
 const guideModal = document.getElementById("guideModal");
 const sortButtons = Array.from(document.querySelectorAll(".sort-button"));
+const timeframeBoards = document.getElementById("timeframeBoards");
 
 const AUTO_REFRESH_MS = 60 * 60 * 1000;
-const DEFAULT_TIMEFRAME = "1D";
+const FALLBACK_TIMEFRAMES = ["4H", "1D", "1W"];
+
 let overviewItems = [];
+let availableTimeframes = [...FALLBACK_TIMEFRAMES];
+let activeTimeframe = "1D";
 let sortState = { field: null, order: null };
 
 function formatDateTime(value) {
@@ -24,10 +28,6 @@ function formatDateTime(value) {
 
 function formatFactor(value) {
   return Number(value).toFixed(4);
-}
-
-function formatVolume(value) {
-  return `${(Number(value) / 1e8).toFixed(2)}亿 USDT`;
 }
 
 function formatPct(value) {
@@ -63,73 +63,60 @@ function closeGuide() {
   guideModal.setAttribute("aria-hidden", "true");
 }
 
-function createFrameRow(asset, frame, rowSpan, isFirstRow) {
+function getFrame(asset, timeframe = activeTimeframe) {
+  const frames = asset.frames || [];
+  return frames.find((frame) => frame.timeframe === timeframe) || null;
+}
+
+function renderBoardTabs() {
+  timeframeBoards.innerHTML = "";
+  for (const timeframe of availableTimeframes) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `pill-button${timeframe === activeTimeframe ? " active" : ""}`;
+    button.textContent = timeframe;
+    button.addEventListener("click", () => {
+      activeTimeframe = timeframe;
+      renderBoardTabs();
+      renderRows(overviewItems);
+    });
+    timeframeBoards.appendChild(button);
+  }
+}
+
+function createRow(asset, frame) {
   const row = document.createElement("tr");
   row.className = "asset-row";
 
-  if (isFirstRow) {
-    const symbolCell = document.createElement("td");
-    symbolCell.rowSpan = rowSpan;
-    symbolCell.className = "sticky-group-cell";
-    symbolCell.innerHTML = `
+  row.innerHTML = `
+    <td>
       <div class="asset-cell">
         <span class="symbol-chip" title="${asset.symbol}">${asset.display_name || asset.symbol}</span>
         <small>${asset.symbol}</small>
       </div>
-    `;
-    row.appendChild(symbolCell);
-
-    const metaCell = document.createElement("td");
-    metaCell.rowSpan = rowSpan;
-    metaCell.className = "sticky-group-cell";
-    metaCell.innerHTML = `
+    </td>
+    <td>
       <div class="source-cell">
         <strong class="${factorClass(asset.eight_hour_pct)}">${formatPct(asset.eight_hour_pct)}</strong>
-        <small>${asset.data_source.toUpperCase()}</small>
+        <small>8H</small>
       </div>
-    `;
-    row.appendChild(metaCell);
-  }
+    </td>
+    <td><span class="timeframe-chip">${frame.timeframe}</span></td>
+    <td class="${factorClass(frame.corr)}">${formatFactor(frame.corr)}</td>
+    <td class="${factorClass(frame.beta)}">${formatFactor(frame.beta)}</td>
+    <td class="${factorClass(frame.residual)}">${formatFactor(frame.residual)}</td>
+    <td class="${factorClass(frame.lag_corr)}">${formatFactor(frame.lag_corr)}</td>
+    <td><span class="signal-badge">${frame.signal}</span></td>
+  `;
 
-  const timeframeCell = document.createElement("td");
-  timeframeCell.innerHTML = `<span class="timeframe-chip">${frame.timeframe}</span>`;
-  row.appendChild(timeframeCell);
-
-  const latestTimeCell = document.createElement("td");
-  latestTimeCell.textContent = formatDateTime(frame.latest_time);
-  row.appendChild(latestTimeCell);
-
-  const corrCell = document.createElement("td");
-  corrCell.className = factorClass(frame.corr);
-  corrCell.textContent = formatFactor(frame.corr);
-  row.appendChild(corrCell);
-
-  const betaCell = document.createElement("td");
-  betaCell.className = factorClass(frame.beta);
-  betaCell.textContent = formatFactor(frame.beta);
-  row.appendChild(betaCell);
-
-  const residualCell = document.createElement("td");
-  residualCell.className = factorClass(frame.residual);
-  residualCell.textContent = formatFactor(frame.residual);
-  row.appendChild(residualCell);
-
-  const lagCorrCell = document.createElement("td");
-  lagCorrCell.className = factorClass(frame.lag_corr);
-  lagCorrCell.textContent = formatFactor(frame.lag_corr);
-  row.appendChild(lagCorrCell);
-
-  const signalCell = document.createElement("td");
-  signalCell.innerHTML = `<span class="signal-badge">${frame.signal}</span>`;
-  row.appendChild(signalCell);
-
+  const href = `/detail?symbol=${encodeURIComponent(asset.symbol)}&timeframe=${encodeURIComponent(frame.timeframe)}`;
   row.addEventListener("click", () => {
-    window.location.href = `/detail?symbol=${encodeURIComponent(asset.symbol)}`;
+    window.location.href = href;
   });
   row.addEventListener("keydown", (event) => {
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
-      window.location.href = `/detail?symbol=${encodeURIComponent(asset.symbol)}`;
+      window.location.href = href;
     }
   });
   row.tabIndex = 0;
@@ -141,21 +128,20 @@ function getSortMetric(asset, field) {
     return Number(asset.eight_hour_pct || 0);
   }
 
-  const frames = asset.frames || [];
-  const preferredFrame = frames.find((frame) => frame.timeframe === DEFAULT_TIMEFRAME) || frames[0];
-  if (!preferredFrame) {
+  const frame = getFrame(asset);
+  if (!frame) {
     return Number.NEGATIVE_INFINITY;
   }
-  return Number(preferredFrame[field] || 0);
+  return Number(frame[field] || 0);
 }
 
 function getSortedItems(items) {
-  const sorted = [...items];
+  const visible = items.filter((asset) => getFrame(asset));
   if (!sortState.field || !sortState.order) {
-    return sorted;
+    return visible;
   }
 
-  sorted.sort((left, right) => {
+  return [...visible].sort((left, right) => {
     const leftValue = getSortMetric(left, sortState.field);
     const rightValue = getSortMetric(right, sortState.field);
     if (leftValue === rightValue) {
@@ -163,7 +149,6 @@ function getSortedItems(items) {
     }
     return sortState.order === "desc" ? rightValue - leftValue : leftValue - rightValue;
   });
-  return sorted;
 }
 
 function updateSortButtons() {
@@ -176,20 +161,17 @@ function updateSortButtons() {
 function renderRows(items) {
   factorTableBody.innerHTML = "";
   for (const asset of getSortedItems(items)) {
-    const frames = asset.frames || [];
-    if (frames.length === 0) {
+    const frame = getFrame(asset);
+    if (!frame) {
       continue;
     }
-
-    frames.forEach((frame, index) => {
-      factorTableBody.appendChild(createFrameRow(asset, frame, frames.length, index === 0));
-    });
+    factorTableBody.appendChild(createRow(asset, frame));
   }
 
   if (!factorTableBody.children.length) {
     factorTableBody.innerHTML = `
       <tr>
-        <td colspan="9" class="loading-cell">暂无可展示数据</td>
+        <td colspan="8" class="loading-cell">${activeTimeframe} 面板暂无可展示数据</td>
       </tr>
     `;
   }
@@ -200,7 +182,7 @@ async function loadOverview() {
   refreshButton.disabled = true;
   factorTableBody.innerHTML = `
     <tr>
-      <td colspan="9" class="loading-cell">正在刷新数据...</td>
+      <td colspan="8" class="loading-cell">正在刷新数据...</td>
     </tr>
   `;
 
@@ -213,16 +195,23 @@ async function loadOverview() {
 
     const payload = await response.json();
     overviewItems = payload.items || [];
+    availableTimeframes = payload.timeframes?.length ? payload.timeframes : [...FALLBACK_TIMEFRAMES];
+    if (!availableTimeframes.includes(activeTimeframe)) {
+      activeTimeframe = availableTimeframes.includes("1D") ? "1D" : availableTimeframes[0];
+    }
+
     benchmarkValue.textContent = payload.benchmark;
     updatedAtValue.textContent = `${formatDateTime(payload.updated_at)} | 标的池 ${formatDateTime(payload.universe_updated_at)}`;
-    windowValue.textContent = `${payload.rolling_window} Days | ${payload.asset_count} Symbols`;
+    windowValue.textContent = `${payload.rolling_window} Bars | ${payload.asset_count} Symbols`;
+
+    renderBoardTabs();
     renderRows(overviewItems);
     updateSortButtons();
   } catch (error) {
     showError(error.message || "加载失败");
     factorTableBody.innerHTML = `
       <tr>
-        <td colspan="9" class="loading-cell">暂无可展示数据</td>
+        <td colspan="8" class="loading-cell">暂无可展示数据</td>
       </tr>
     `;
   } finally {
