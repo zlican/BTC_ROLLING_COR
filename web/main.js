@@ -10,15 +10,22 @@ const guideModal = document.getElementById("guideModal");
 const symbolSearchInput = document.getElementById("symbolSearchInput");
 const sortButtons = Array.from(document.querySelectorAll(".sort-button"));
 const timeframeBoards = document.getElementById("timeframeBoards");
+const signalFilterButtons = Array.from(document.querySelectorAll(".signal-filter-chip"));
 
 const AUTO_REFRESH_MS = 60 * 60 * 1000;
 const FALLBACK_TIMEFRAMES = ["4H", "1D", "1W"];
+const signalMeta = {
+  follow: { label: "跟随", badgeClass: "badge-follow" },
+  strong_follow: { label: "强跟随", badgeClass: "badge-strong-follow" },
+  independent: { label: "独立", badgeClass: "badge-independent" },
+};
 
 let overviewItems = [];
 let availableTimeframes = [...FALLBACK_TIMEFRAMES];
 let activeTimeframe = "1D";
 let sortState = { field: null, order: null };
 let searchKeyword = "";
+let signalFilter = "all";
 
 function formatDateTime(value) {
   const date = new Date(value);
@@ -70,18 +77,22 @@ function getFrame(asset, timeframe = activeTimeframe) {
   return frames.find((frame) => frame.timeframe === timeframe) || null;
 }
 
+function getSignalMeta(signalCode) {
+  return signalMeta[signalCode] || { label: "-", badgeClass: "" };
+}
+
 function isDisplayableFrame(frame) {
   if (!frame) {
     return false;
   }
 
-  const values = [frame.corr, frame.beta, frame.residual, frame.lag_corr].map((value) => Number(value || 0));
-  const allZero = values.every((value) => value === 0);
-  const placeholderSignals = new Set(["历史不足", "波动过低", "数据不足", "对齐失败"]);
-  if (allZero) {
+  if (frame.status !== "ok") {
     return false;
   }
-  if (placeholderSignals.has(frame.signal)) {
+
+  const values = [frame.corr, frame.beta, frame.residual, frame.lag_corr].map((value) => Number(value || 0));
+  const allZero = values.every((value) => value === 0);
+  if (allZero) {
     return false;
   }
   return true;
@@ -96,6 +107,13 @@ function matchesSearch(asset) {
   const displayName = String(asset.display_name || "").toUpperCase();
   const symbol = String(asset.symbol || "").toUpperCase();
   return displayName.includes(keyword) || symbol.includes(keyword);
+}
+
+function matchesSignalFilter(frame) {
+  if (signalFilter === "all") {
+    return true;
+  }
+  return frame?.signal_code === signalFilter;
 }
 
 function renderBoardTabs() {
@@ -117,6 +135,7 @@ function renderBoardTabs() {
 function createRow(asset, frame) {
   const row = document.createElement("tr");
   row.className = "asset-row";
+  const meta = getSignalMeta(frame.signal_code);
 
   row.innerHTML = `
     <td>
@@ -136,7 +155,7 @@ function createRow(asset, frame) {
     <td class="${factorClass(frame.beta)}">${formatFactor(frame.beta)}</td>
     <td class="${factorClass(frame.residual)}">${formatFactor(frame.residual)}</td>
     <td class="${factorClass(frame.lag_corr)}">${formatFactor(frame.lag_corr)}</td>
-    <td><span class="signal-badge">${frame.signal}</span></td>
+    <td><span class="signal-badge ${meta.badgeClass}">${meta.label}</span></td>
   `;
 
   const href = `/detail?symbol=${encodeURIComponent(asset.symbol)}&timeframe=${encodeURIComponent(frame.timeframe)}`;
@@ -172,7 +191,7 @@ function getSortMetric(asset, field) {
 function getSortedItems(items) {
   const visible = items.filter((asset) => {
     const frame = getFrame(asset);
-    return isDisplayableFrame(frame) && matchesSearch(asset);
+    return isDisplayableFrame(frame) && matchesSearch(asset) && matchesSignalFilter(frame);
   });
   if (!sortState.field || !sortState.order) {
     return visible;
@@ -201,6 +220,12 @@ function updateSortButtons() {
   for (const button of sortButtons) {
     const isActive = button.dataset.sortField === sortState.field && button.dataset.sortOrder === sortState.order;
     button.classList.toggle("active", isActive);
+  }
+}
+
+function updateSignalFilterButtons() {
+  for (const button of signalFilterButtons) {
+    button.classList.toggle("active", button.dataset.signalFilter === signalFilter);
   }
 }
 
@@ -253,6 +278,7 @@ async function loadOverview() {
     renderBoardTabs();
     renderRows(overviewItems);
     updateSortButtons();
+    updateSignalFilterButtons();
   } catch (error) {
     showError(error.message || "加载失败");
     factorTableBody.innerHTML = `
@@ -292,6 +318,13 @@ symbolSearchInput.addEventListener("input", (event) => {
   searchKeyword = event.target.value || "";
   renderRows(overviewItems);
 });
+for (const button of signalFilterButtons) {
+  button.addEventListener("click", () => {
+    signalFilter = button.dataset.signalFilter || "all";
+    updateSignalFilterButtons();
+    renderRows(overviewItems);
+  });
+}
 
 loadOverview();
 setInterval(loadOverview, AUTO_REFRESH_MS);

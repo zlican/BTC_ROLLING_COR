@@ -78,6 +78,18 @@ var timeframeConfigs = map[string]TimeframeConfig{
 
 var supportedTimeframes = []string{"4H", "1D", "1W"}
 
+const (
+	statusOK                  = "ok"
+	statusInsufficientHistory = "insufficient_history"
+	statusLowVariance         = "low_variance"
+	statusAlignmentFailed     = "alignment_failed"
+	statusUnavailable         = "unavailable"
+
+	signalIndependent  = "independent"
+	signalFollow       = "follow"
+	signalStrongFollow = "strong_follow"
+)
+
 type AssetConfig struct {
 	Symbol       string
 	DisplayName  string
@@ -98,12 +110,13 @@ type FactorFrame struct {
 	PairLabel      string        `json:"pair_label"`
 	BenchmarkInst  string        `json:"benchmark_inst"`
 	DataSource     string        `json:"data_source"`
+	Status         string        `json:"status"`
+	SignalCode     string        `json:"signal_code"`
 	LatestTime     time.Time     `json:"latest_time"`
 	LatestCorr     float64       `json:"latest_corr"`
 	LatestBeta     float64       `json:"latest_beta"`
 	LatestResidual float64       `json:"latest_residual"`
 	LatestLagCorr  float64       `json:"latest_lag_corr"`
-	Signal         string        `json:"signal"`
 	CorrPoints     []FactorPoint `json:"corr,omitempty"`
 	BetaPoints     []FactorPoint `json:"beta,omitempty"`
 	ResidualPoints []FactorPoint `json:"residual,omitempty"`
@@ -575,7 +588,7 @@ func (s *FactorService) fetchFrame(ctx context.Context, cfg AssetConfig, cfgTime
 		if err != nil {
 			lastErr = err
 			if fallback == nil {
-				fallback = placeholderFrame(cfgTimeframe.Name, priceDates, instID, pairLabel, benchmark.InstID, provider.Name(), "对齐失败")
+				fallback = placeholderFrame(cfgTimeframe.Name, priceDates, instID, pairLabel, benchmark.InstID, provider.Name(), statusAlignmentFailed)
 			}
 			return frameFetchResult{Frame: fallback, Reason: err.Error()}
 		}
@@ -584,7 +597,7 @@ func (s *FactorService) fetchFrame(ctx context.Context, cfg AssetConfig, cfgTime
 		if err != nil {
 			lastErr = err
 			if fallback == nil {
-				fallback = placeholderFrame(cfgTimeframe.Name, priceDates, instID, pairLabel, benchmark.InstID, provider.Name(), "历史不足")
+				fallback = placeholderFrame(cfgTimeframe.Name, priceDates, instID, pairLabel, benchmark.InstID, provider.Name(), statusInsufficientHistory)
 			}
 			return frameFetchResult{Frame: fallback, Reason: err.Error()}
 		}
@@ -609,7 +622,7 @@ func (s *FactorService) fetchFrame(ctx context.Context, cfg AssetConfig, cfgTime
 		if lastErr != nil && !errors.Is(lastErr, errSymbolUnsupported) {
 			log.Printf("frame fallback used: symbol=%s timeframe=%s err=%v", cfg.Symbol, cfgTimeframe.Name, lastErr)
 		}
-		return frameFetchResult{Frame: fallback, Reason: fallback.Signal}
+		return frameFetchResult{Frame: fallback, Reason: fallback.Status}
 	}
 
 	if lastErr != nil && !errors.Is(lastErr, errSymbolUnsupported) {
@@ -621,20 +634,20 @@ func (s *FactorService) fetchFrame(ctx context.Context, cfg AssetConfig, cfgTime
 
 func placeholderSignalForFactorError(err error) string {
 	if err == nil {
-		return "数据不足"
+		return statusUnavailable
 	}
 	message := err.Error()
 	switch {
 	case strings.Contains(message, "return variance is too small"):
-		return "波动过低"
+		return statusLowVariance
 	case strings.Contains(message, "smaller than rolling window"):
-		return "历史不足"
+		return statusInsufficientHistory
 	default:
-		return "数据不足"
+		return statusUnavailable
 	}
 }
 
-func placeholderFrame(timeframe string, dates []time.Time, instID, pairLabel, benchmarkInst, dataSource, signal string) *FactorFrame {
+func placeholderFrame(timeframe string, dates []time.Time, instID, pairLabel, benchmarkInst, dataSource, status string) *FactorFrame {
 	latest := time.Time{}
 	if len(dates) > 0 {
 		latest = dates[len(dates)-1]
@@ -645,8 +658,8 @@ func placeholderFrame(timeframe string, dates []time.Time, instID, pairLabel, be
 		PairLabel:     pairLabel,
 		BenchmarkInst: benchmarkInst,
 		DataSource:    dataSource,
+		Status:        status,
 		LatestTime:    latest,
-		Signal:        signal,
 	}
 }
 
@@ -1223,12 +1236,13 @@ func buildFactorFrame(timeframe string, dates []time.Time, assetReturns, benchma
 
 	return &FactorFrame{
 		Timeframe:      timeframe,
+		Status:         statusOK,
+		SignalCode:     classifySignalCode(latestCorr.Value, latestBeta.Value),
 		LatestTime:     latestCorr.Time,
 		LatestCorr:     latestCorr.Value,
 		LatestBeta:     latestBeta.Value,
 		LatestResidual: latestResidual.Value,
 		LatestLagCorr:  latestLagCorr.Value,
-		Signal:         classifySignal(latestCorr.Value, latestBeta.Value, latestResidual.Value, latestLagCorr.Value),
 		CorrPoints:     corrPoints,
 		BetaPoints:     betaPoints,
 		ResidualPoints: residualPoints,
@@ -1236,17 +1250,14 @@ func buildFactorFrame(timeframe string, dates []time.Time, assetReturns, benchma
 	}, nil
 }
 
-func classifySignal(corr, beta, residual, lagCorr float64) string {
-	switch {
-	case corr < 0.3 && residual > 0:
-		return "独立强势币"
-	case lagCorr > 0.6:
-		return "BTC带动候选"
-	case beta > 1.5 && corr > 0.7:
-		return "高弹性跟随"
-	default:
-		return "常规跟随"
+func classifySignalCode(corr, beta float64) string {
+	if corr < 0.75 {
+		return signalIndependent
 	}
+	if beta > 1.5 {
+		return signalStrongFollow
+	}
+	return signalFollow
 }
 
 func alignPairSeries(assetSeries, benchmarkSeries []dataPoint) ([]time.Time, []float64, []float64, error) {

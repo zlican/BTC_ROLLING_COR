@@ -154,6 +154,9 @@ body {
 }
 
 .search-row {
+  display: grid;
+  gap: 18px;
+  grid-template-columns: minmax(0, 420px) minmax(0, 1fr);
   margin-bottom: 18px;
 }
 
@@ -161,6 +164,12 @@ body {
   display: grid;
   gap: 8px;
   max-width: 420px;
+}
+
+.filter-field {
+  display: grid;
+  gap: 8px;
+  align-content: start;
 }
 
 .search-input {
@@ -350,6 +359,21 @@ body {
   color: var(--accent-deep);
 }
 
+.badge-follow {
+  background: rgba(139, 109, 83, 0.14);
+  color: #6d5642;
+}
+
+.badge-strong-follow {
+  background: rgba(31, 122, 92, 0.16);
+  color: #1f7a5c;
+}
+
+.badge-independent {
+  background: rgba(50, 106, 181, 0.16);
+  color: #326ab5;
+}
+
 .factor-positive {
   color: var(--success);
   font-weight: 700;
@@ -394,6 +418,41 @@ body {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.signal-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  padding: 0 16px;
+  border: 1px solid rgba(123, 47, 15, 0.18);
+  border-radius: 999px;
+  background: rgba(255, 250, 241, 0.82);
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+}
+
+.signal-filter-chip.active {
+  border-color: rgba(123, 47, 15, 0.36);
+  box-shadow: 0 0 0 3px rgba(123, 47, 15, 0.08);
+}
+
+.chip-follow {
+  background: rgba(139, 109, 83, 0.12);
+  color: #6d5642;
+}
+
+.chip-strong-follow {
+  background: rgba(31, 122, 92, 0.14);
+  color: #1f7a5c;
+}
+
+.chip-independent {
+  background: rgba(50, 106, 181, 0.14);
+  color: #326ab5;
 }
 
 .pill-button.active,
@@ -514,6 +573,7 @@ body {
   }
 
   .toolbar-block,
+  .search-row,
   .metric-grid,
   .guide-grid {
     grid-template-columns: 1fr 1fr;
@@ -534,6 +594,7 @@ body {
   }
 
   .toolbar-block,
+  .search-row,
   .metric-grid,
   .guide-grid {
     grid-template-columns: 1fr;

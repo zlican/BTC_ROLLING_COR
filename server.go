@@ -42,12 +42,13 @@ type OverviewFrameItem struct {
 	PairLabel     string  `json:"pair_label"`
 	BenchmarkInst string  `json:"benchmark_inst"`
 	DataSource    string  `json:"data_source"`
+	Status        string  `json:"status"`
+	SignalCode    string  `json:"signal_code"`
 	LatestTime    string  `json:"latest_time"`
 	Corr          float64 `json:"corr"`
 	Beta          float64 `json:"beta"`
 	Residual      float64 `json:"residual"`
 	LagCorr       float64 `json:"lag_corr"`
-	Signal        string  `json:"signal"`
 }
 
 type DetailResponse struct {
@@ -76,12 +77,13 @@ type DetailFrameOutput struct {
 	PairLabel      string        `json:"pair_label"`
 	BenchmarkInst  string        `json:"benchmark_inst"`
 	DataSource     string        `json:"data_source"`
+	Status         string        `json:"status"`
+	SignalCode     string        `json:"signal_code"`
 	LatestTime     string        `json:"latest_time"`
 	Corr           float64       `json:"corr"`
 	Beta           float64       `json:"beta"`
 	Residual       float64       `json:"residual"`
 	LagCorr        float64       `json:"lag_corr"`
-	Signal         string        `json:"signal"`
 	CorrPoints     []PointOutput `json:"corr_points"`
 	BetaPoints     []PointOutput `json:"beta_points"`
 	ResidualPoints []PointOutput `json:"residual_points"`
@@ -141,12 +143,13 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 				PairLabel:     frame.PairLabel,
 				BenchmarkInst: frame.BenchmarkInst,
 				DataSource:    frame.DataSource,
+				Status:        frame.Status,
+				SignalCode:    frame.SignalCode,
 				LatestTime:    frame.LatestTime.Format(timeLayout),
 				Corr:          frame.LatestCorr,
 				Beta:          frame.LatestBeta,
 				Residual:      frame.LatestResidual,
 				LagCorr:       frame.LatestLagCorr,
-				Signal:        frame.Signal,
 			})
 		}
 
@@ -200,12 +203,13 @@ func (s *Server) handleDetail(w http.ResponseWriter, r *http.Request) {
 			PairLabel:      frame.PairLabel,
 			BenchmarkInst:  frame.BenchmarkInst,
 			DataSource:     frame.DataSource,
+			Status:         frame.Status,
+			SignalCode:     frame.SignalCode,
 			LatestTime:     frame.LatestTime.Format(timeLayout),
 			Corr:           frame.LatestCorr,
 			Beta:           frame.LatestBeta,
 			Residual:       frame.LatestResidual,
 			LagCorr:        frame.LatestLagCorr,
-			Signal:         frame.Signal,
 			CorrPoints:     pointsToOutput(frame.CorrPoints),
 			BetaPoints:     pointsToOutput(frame.BetaPoints),
 			ResidualPoints: pointsToOutput(frame.ResidualPoints),

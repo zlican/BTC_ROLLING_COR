@@ -16,6 +16,18 @@ const factorMap = {
   residual: { label: "Residual", key: "residual_points", latestKey: "residual", color: "#8757d7" },
   lag_corr: { label: "Lag Corr", key: "lag_corr_points", latestKey: "lag_corr", color: "#a23d36" },
 };
+const signalMeta = {
+  follow: { label: "跟随" },
+  strong_follow: { label: "强跟随" },
+  independent: { label: "独立" },
+};
+const statusMeta = {
+  ok: { label: "正常" },
+  insufficient_history: { label: "历史不足" },
+  low_variance: { label: "波动过低" },
+  alignment_failed: { label: "对齐失败" },
+  unavailable: { label: "数据不足" },
+};
 
 let chartInstance;
 let detailPayload;
@@ -60,6 +72,16 @@ function formatPct(value) {
 function showError(message) {
   detailErrorBanner.textContent = message;
   detailErrorBanner.classList.remove("hidden");
+}
+
+function getFrameBadge(frame) {
+  if (!frame) {
+    return "-";
+  }
+  if (frame.status && frame.status !== "ok") {
+    return statusMeta[frame.status]?.label || frame.status;
+  }
+  return signalMeta[frame.signal_code]?.label || "-";
 }
 
 function hideError() {
@@ -142,7 +164,7 @@ function renderHeader() {
   detailTitle.textContent = `${detailPayload.asset.display_name || detailPayload.asset.symbol} ${frame.timeframe} 四因子详情`;
   detailSubtitle.textContent = `${frame.pair_label} | 数据源 ${(frame.data_source || detailPayload.asset.data_source || "-").toUpperCase()} | 基准 ${frame.benchmark_inst} | 8H 涨跌幅 ${formatPct(detailPayload.asset.eight_hour_pct)} | 当前图表 ${factorMap[selectedFactor].label}`;
   detailLatestTime.textContent = formatDateTime(frame.latest_time);
-  detailSignal.textContent = frame.signal;
+  detailSignal.textContent = getFrameBadge(frame);
   detailUpdatedAt.textContent = formatDateTime(detailPayload.updated_at);
 }
 

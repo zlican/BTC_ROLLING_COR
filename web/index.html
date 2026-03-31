@@ -52,6 +52,15 @@
           <span class="toolbar-label">搜索标的</span>
           <input id="symbolSearchInput" class="search-input" type="search" placeholder="输入标的名称或代码，支持模糊匹配" autocomplete="off">
         </label>
+        <div class="filter-field">
+          <span class="toolbar-label">信号过滤</span>
+          <div id="signalFilterGroup" class="pill-group">
+            <button class="signal-filter-chip active" type="button" data-signal-filter="all">全部</button>
+            <button class="signal-filter-chip chip-follow" type="button" data-signal-filter="follow">跟随</button>
+            <button class="signal-filter-chip chip-strong-follow" type="button" data-signal-filter="strong_follow">强跟随</button>
+            <button class="signal-filter-chip chip-independent" type="button" data-signal-filter="independent">独立</button>
+          </div>
+        </div>
       </div>
 
       <div class="toolbar-block overview-toolbar">
