@@ -14,11 +14,12 @@ func main() {
 	}
 
 	binanceProvider := &BinanceProvider{client: client}
+	bybitProvider := &BybitProvider{client: client}
 	okxProvider := &OKXProvider{client: client}
 
 	service := &FactorService{
 		universeProvider:  binanceProvider,
-		providers:         []MarketDataProvider{binanceProvider, okxProvider},
+		providers:         []MarketDataProvider{binanceProvider, bybitProvider, okxProvider},
 		datasetTTL:        time.Hour,
 		universeTTL:       time.Hour,
 		rollingWindow:     30,

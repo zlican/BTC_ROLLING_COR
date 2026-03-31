@@ -70,6 +70,23 @@ function getFrame(asset, timeframe = activeTimeframe) {
   return frames.find((frame) => frame.timeframe === timeframe) || null;
 }
 
+function isDisplayableFrame(frame) {
+  if (!frame) {
+    return false;
+  }
+
+  const values = [frame.corr, frame.beta, frame.residual, frame.lag_corr].map((value) => Number(value || 0));
+  const allZero = values.every((value) => value === 0);
+  const placeholderSignals = new Set(["历史不足", "波动过低", "数据不足", "对齐失败"]);
+  if (allZero) {
+    return false;
+  }
+  if (placeholderSignals.has(frame.signal)) {
+    return false;
+  }
+  return true;
+}
+
 function matchesSearch(asset) {
   const keyword = searchKeyword.trim().toUpperCase();
   if (!keyword) {
@@ -153,7 +170,10 @@ function getSortMetric(asset, field) {
 }
 
 function getSortedItems(items) {
-  const visible = items.filter((asset) => getFrame(asset) && matchesSearch(asset));
+  const visible = items.filter((asset) => {
+    const frame = getFrame(asset);
+    return isDisplayableFrame(frame) && matchesSearch(asset);
+  });
   if (!sortState.field || !sortState.order) {
     return visible;
   }

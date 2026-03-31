@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log"
 	"math"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/url"
@@ -20,17 +23,27 @@ import (
 const (
 	binanceTicker24hrURL = "https://fapi.binance.com/fapi/v1/ticker/24hr"
 	binanceKlinesURL     = "https://fapi.binance.com/fapi/v1/klines"
+	bybitKlinesURL       = "https://api.bybit.com/v5/market/kline"
 	okxHistoryCandlesURL = "https://www.okx.com/api/v5/market/history-candles"
 	defaultProxyURL      = "http://127.0.0.1:10809"
 
-	requestTimeout = 20 * time.Second
-	pageLimit      = 100
-	minReturnVar   = 1e-10
+	requestTimeout       = 20 * time.Second
+	refreshTimeout       = 3 * time.Minute
+	pageLimit            = 100
+	minReturnVar         = 1e-10
+	maxRequestAttempts   = 4
+	maxErrorBodyPreview  = 256
+	binanceMinRequestGap = 120 * time.Millisecond
+	bybitMinRequestGap   = 120 * time.Millisecond
+	okxMinRequestGap     = 150 * time.Millisecond
 )
+
+var errSymbolUnsupported = errors.New("symbol unsupported by provider")
 
 type TimeframeConfig struct {
 	Name            string
 	BinanceInterval string
+	BybitInterval   string
 	OKXBar          string
 	CandleDuration  time.Duration
 	HistoryBars     int
@@ -40,6 +53,7 @@ var timeframeConfigs = map[string]TimeframeConfig{
 	"4H": {
 		Name:            "4H",
 		BinanceInterval: "4h",
+		BybitInterval:   "240",
 		OKXBar:          "4H",
 		CandleDuration:  4 * time.Hour,
 		HistoryBars:     240,
@@ -47,6 +61,7 @@ var timeframeConfigs = map[string]TimeframeConfig{
 	"1D": {
 		Name:            "1D",
 		BinanceInterval: "1d",
+		BybitInterval:   "D",
 		OKXBar:          "1Dutc",
 		CandleDuration:  24 * time.Hour,
 		HistoryBars:     120,
@@ -54,6 +69,7 @@ var timeframeConfigs = map[string]TimeframeConfig{
 	"1W": {
 		Name:            "1W",
 		BinanceInterval: "1w",
+		BybitInterval:   "W",
 		OKXBar:          "1Wutc",
 		CandleDuration:  7 * 24 * time.Hour,
 		HistoryBars:     104,
@@ -129,6 +145,16 @@ type okxResponse struct {
 	Data [][]string `json:"data"`
 }
 
+type bybitKlineResponse struct {
+	RetCode int    `json:"retCode"`
+	RetMsg  string `json:"retMsg"`
+	Result  struct {
+		Category string     `json:"category"`
+		Symbol   string     `json:"symbol"`
+		List     [][]string `json:"list"`
+	} `json:"result"`
+}
+
 type binanceTickerItem struct {
 	Symbol      string `json:"symbol"`
 	QuoteVolume string `json:"quoteVolume"`
@@ -145,8 +171,14 @@ type BinanceProvider struct {
 	client *http.Client
 }
 
+type BybitProvider struct {
+	client      *http.Client
+	unsupported sync.Map
+}
+
 type OKXProvider struct {
-	client *http.Client
+	client      *http.Client
+	unsupported sync.Map
 }
 
 type benchmarkData struct {
@@ -157,6 +189,11 @@ type benchmarkData struct {
 type assetResult struct {
 	Asset *AssetSeries
 	Skip  bool
+}
+
+type frameFetchResult struct {
+	Frame  *FactorFrame
+	Reason string
 }
 
 type FactorService struct {
@@ -220,6 +257,136 @@ func isTCPReachable(address string, timeout time.Duration) bool {
 	return true
 }
 
+var outboundRequestSchedule = struct {
+	mu   sync.Mutex
+	next map[string]time.Time
+}{
+	next: make(map[string]time.Time),
+}
+
+func waitForRequestSlot(ctx context.Context, key string, minGap time.Duration) error {
+	if minGap <= 0 {
+		return nil
+	}
+
+	jitter := time.Duration(rand.Int64N(int64(minGap / 3)))
+	outboundRequestSchedule.mu.Lock()
+	slot := time.Now().UTC()
+	if next := outboundRequestSchedule.next[key]; next.After(slot) {
+		slot = next
+	}
+	outboundRequestSchedule.next[key] = slot.Add(minGap + jitter)
+	outboundRequestSchedule.mu.Unlock()
+
+	wait := time.Until(slot)
+	if wait <= 0 {
+		return nil
+	}
+
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func requestBackoff(attempt int, minGap time.Duration) time.Duration {
+	if attempt <= 1 {
+		return minGap + time.Duration(rand.Int64N(int64(minGap)))
+	}
+	backoff := minGap * time.Duration(1<<(attempt-1))
+	if backoff > 2*time.Second {
+		backoff = 2 * time.Second
+	}
+	return backoff + time.Duration(rand.Int64N(int64(minGap)))
+}
+
+func sleepWithContext(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		return nil
+	}
+
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func shouldRetryHTTPStatus(status int) bool {
+	switch status {
+	case http.StatusTooManyRequests,
+		http.StatusRequestTimeout,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout:
+		return true
+	default:
+		return status >= 500
+	}
+}
+
+func doJSONRequest[T any](ctx context.Context, client *http.Client, requestName, rateKey string, minGap time.Duration, buildRequest func() (*http.Request, error)) (T, error) {
+	var zero T
+	var lastErr error
+
+	for attempt := 1; attempt <= maxRequestAttempts; attempt++ {
+		if err := waitForRequestSlot(ctx, rateKey, minGap); err != nil {
+			return zero, fmt.Errorf("%s wait rate slot: %w", requestName, err)
+		}
+
+		req, err := buildRequest()
+		if err != nil {
+			return zero, fmt.Errorf("%s build request: %w", requestName, err)
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("%s request: %w", requestName, err)
+		} else {
+			body, readErr := io.ReadAll(resp.Body)
+			closeErr := resp.Body.Close()
+			if readErr != nil {
+				lastErr = fmt.Errorf("%s read body: %w", requestName, readErr)
+			} else if closeErr != nil {
+				lastErr = fmt.Errorf("%s close body: %w", requestName, closeErr)
+			} else if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+				preview := strings.TrimSpace(string(body))
+				if len(preview) > maxErrorBodyPreview {
+					preview = preview[:maxErrorBodyPreview]
+				}
+				lastErr = fmt.Errorf("%s returned HTTP %d: %s", requestName, resp.StatusCode, preview)
+				if !shouldRetryHTTPStatus(resp.StatusCode) {
+					return zero, lastErr
+				}
+			} else {
+				var payload T
+				if err := json.Unmarshal(body, &payload); err != nil {
+					return zero, fmt.Errorf("%s decode response: %w", requestName, err)
+				}
+				return payload, nil
+			}
+		}
+
+		if attempt == maxRequestAttempts {
+			break
+		}
+		if err := sleepWithContext(ctx, requestBackoff(attempt, minGap)); err != nil {
+			return zero, fmt.Errorf("%s retry backoff: %w", requestName, err)
+		}
+	}
+
+	return zero, lastErr
+}
+
 func (s *FactorService) GetDataset(ctx context.Context) (*FactorDataset, error) {
 	s.datasetMu.RLock()
 	if s.datasetCached != nil && time.Since(s.datasetCachedAt) < s.datasetTTL {
@@ -236,7 +403,10 @@ func (s *FactorService) GetDataset(ctx context.Context) (*FactorDataset, error) 
 		return s.datasetCached, nil
 	}
 
-	dataset, err := s.refresh(ctx)
+	refreshCtx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
+	defer cancel()
+
+	dataset, err := s.refresh(refreshCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -317,6 +487,20 @@ func (s *FactorService) refresh(ctx context.Context) (*FactorDataset, error) {
 		return nil, errors.New("no assets remained after factor calculation and rolling-window filtering")
 	}
 
+	timeframeCounts := make(map[string]int, len(supportedTimeframes))
+	for _, symbol := range dataset.Order {
+		for _, timeframeName := range dataset.Assets[symbol].FrameOrder {
+			timeframeCounts[timeframeName]++
+		}
+	}
+	log.Printf("dataset refreshed: universe=%d assets=%d 4H=%d 1D=%d 1W=%d",
+		len(assets),
+		len(dataset.Order),
+		timeframeCounts["4H"],
+		timeframeCounts["1D"],
+		timeframeCounts["1W"],
+	)
+
 	sort.Slice(dataset.Order, func(i, j int) bool {
 		left := dataset.Assets[dataset.Order[i]]
 		right := dataset.Assets[dataset.Order[j]]
@@ -335,45 +519,10 @@ func (s *FactorService) buildAssetSeries(ctx context.Context, cfg AssetConfig, b
 
 	for _, timeframeName := range supportedTimeframes {
 		cfgTimeframe := timeframeConfigs[timeframeName]
-		startDate, endDate := timeframeRange(cfgTimeframe)
-
-		for _, provider := range s.providers {
-			benchmarkFrames, ok := benchmarkSets[provider.Name()]
-			if !ok {
-				continue
-			}
-			benchmark, ok := benchmarkFrames[timeframeName]
-			if !ok {
-				continue
-			}
-
-			instID, pairLabel, priceSeries, err := provider.FetchAssetHistory(ctx, cfg.Symbol, cfgTimeframe, startDate, endDate)
-			if err != nil {
-				continue
-			}
-
-			priceDates, assetPrices, benchmarkPrices, err := alignPairSeries(priceSeries, benchmark.Series)
-			if err != nil {
-				continue
-			}
-
-			returnDates, assetReturns, benchmarkReturns, err := computeReturns(priceDates, assetPrices, benchmarkPrices)
-			if err != nil {
-				continue
-			}
-
-			frame, err := buildFactorFrame(cfgTimeframe.Name, returnDates, assetReturns, benchmarkReturns, s.rollingWindow)
-			if err != nil {
-				continue
-			}
-
-			frame.InstID = instID
-			frame.PairLabel = pairLabel
-			frame.BenchmarkInst = benchmark.InstID
-			frame.DataSource = provider.Name()
-			frames[timeframeName] = frame
+		frameResult := s.fetchFrame(ctx, cfg, cfgTimeframe, benchmarkSets)
+		if frameResult.Frame != nil {
+			frames[timeframeName] = frameResult.Frame
 			frameOrder = append(frameOrder, timeframeName)
-			break
 		}
 	}
 
@@ -395,6 +544,109 @@ func (s *FactorService) buildAssetSeries(ctx context.Context, cfg AssetConfig, b
 			Frames:        frames,
 			FrameOrder:    frameOrder,
 		},
+	}
+}
+
+func (s *FactorService) fetchFrame(ctx context.Context, cfg AssetConfig, cfgTimeframe TimeframeConfig, benchmarkSets map[string]map[string]benchmarkData) frameFetchResult {
+	startDate, endDate := timeframeRange(cfgTimeframe)
+	var lastErr error
+	var fallback *FactorFrame
+
+	for _, provider := range s.providers {
+		benchmarkFrames, ok := benchmarkSets[provider.Name()]
+		if !ok {
+			continue
+		}
+		benchmark, ok := benchmarkFrames[cfgTimeframe.Name]
+		if !ok {
+			continue
+		}
+
+		instID, pairLabel, priceSeries, err := provider.FetchAssetHistory(ctx, cfg.Symbol, cfgTimeframe, startDate, endDate)
+		if err != nil {
+			if errors.Is(err, errSymbolUnsupported) {
+				continue
+			}
+			lastErr = err
+			continue
+		}
+
+		priceDates, assetPrices, benchmarkPrices, err := alignPairSeries(priceSeries, benchmark.Series)
+		if err != nil {
+			lastErr = err
+			if fallback == nil {
+				fallback = placeholderFrame(cfgTimeframe.Name, priceDates, instID, pairLabel, benchmark.InstID, provider.Name(), "对齐失败")
+			}
+			return frameFetchResult{Frame: fallback, Reason: err.Error()}
+		}
+
+		returnDates, assetReturns, benchmarkReturns, err := computeReturns(priceDates, assetPrices, benchmarkPrices)
+		if err != nil {
+			lastErr = err
+			if fallback == nil {
+				fallback = placeholderFrame(cfgTimeframe.Name, priceDates, instID, pairLabel, benchmark.InstID, provider.Name(), "历史不足")
+			}
+			return frameFetchResult{Frame: fallback, Reason: err.Error()}
+		}
+
+		frame, err := buildFactorFrame(cfgTimeframe.Name, returnDates, assetReturns, benchmarkReturns, s.rollingWindow)
+		if err != nil {
+			lastErr = err
+			if fallback == nil {
+				fallback = placeholderFrame(cfgTimeframe.Name, returnDates, instID, pairLabel, benchmark.InstID, provider.Name(), placeholderSignalForFactorError(err))
+			}
+			return frameFetchResult{Frame: fallback, Reason: err.Error()}
+		}
+
+		frame.InstID = instID
+		frame.PairLabel = pairLabel
+		frame.BenchmarkInst = benchmark.InstID
+		frame.DataSource = provider.Name()
+		return frameFetchResult{Frame: frame}
+	}
+
+	if fallback != nil {
+		if lastErr != nil && !errors.Is(lastErr, errSymbolUnsupported) {
+			log.Printf("frame fallback used: symbol=%s timeframe=%s err=%v", cfg.Symbol, cfgTimeframe.Name, lastErr)
+		}
+		return frameFetchResult{Frame: fallback, Reason: fallback.Signal}
+	}
+
+	if lastErr != nil && !errors.Is(lastErr, errSymbolUnsupported) {
+		log.Printf("frame fetch failed: symbol=%s timeframe=%s err=%v", cfg.Symbol, cfgTimeframe.Name, lastErr)
+		return frameFetchResult{Reason: lastErr.Error()}
+	}
+	return frameFetchResult{Reason: "no provider available"}
+}
+
+func placeholderSignalForFactorError(err error) string {
+	if err == nil {
+		return "数据不足"
+	}
+	message := err.Error()
+	switch {
+	case strings.Contains(message, "return variance is too small"):
+		return "波动过低"
+	case strings.Contains(message, "smaller than rolling window"):
+		return "历史不足"
+	default:
+		return "数据不足"
+	}
+}
+
+func placeholderFrame(timeframe string, dates []time.Time, instID, pairLabel, benchmarkInst, dataSource, signal string) *FactorFrame {
+	latest := time.Time{}
+	if len(dates) > 0 {
+		latest = dates[len(dates)-1]
+	}
+	return &FactorFrame{
+		Timeframe:     timeframe,
+		InstID:        instID,
+		PairLabel:     pairLabel,
+		BenchmarkInst: benchmarkInst,
+		DataSource:    dataSource,
+		LatestTime:    latest,
+		Signal:        signal,
 	}
 }
 
@@ -449,27 +701,18 @@ func (p *BinanceProvider) Name() string {
 }
 
 func (p *BinanceProvider) FetchDynamicUniverse(ctx context.Context, minQuoteVolume float64) ([]AssetConfig, time.Time, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, binanceTicker24hrURL, nil)
+	payload, err := doJSONRequest[[]binanceTickerItem](
+		ctx,
+		p.client,
+		"binance ticker 24hr",
+		"binance",
+		binanceMinRequestGap,
+		func() (*http.Request, error) {
+			return http.NewRequestWithContext(ctx, http.MethodGet, binanceTicker24hrURL, nil)
+		},
+	)
 	if err != nil {
-		return nil, time.Time{}, fmt.Errorf("build binance ticker request: %w", err)
-	}
-
-	resp, err := p.client.Do(req)
-	if err != nil {
-		return nil, time.Time{}, fmt.Errorf("request binance ticker 24hr: %w", err)
-	}
-
-	var payload []binanceTickerItem
-	decodeErr := json.NewDecoder(resp.Body).Decode(&payload)
-	closeErr := resp.Body.Close()
-	if decodeErr != nil {
-		return nil, time.Time{}, fmt.Errorf("decode binance ticker 24hr: %w", decodeErr)
-	}
-	if closeErr != nil {
-		return nil, time.Time{}, fmt.Errorf("close binance ticker body: %w", closeErr)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, time.Time{}, fmt.Errorf("binance ticker 24hr returned HTTP %d", resp.StatusCode)
+		return nil, time.Time{}, err
 	}
 
 	var assets []AssetConfig
@@ -547,8 +790,13 @@ func (p *BinanceProvider) attachEightHourChanges(ctx context.Context, assets []A
 	wg.Wait()
 	close(errCh)
 
+	var failed int
 	for err := range errCh {
-		return err
+		failed++
+		log.Printf("8h change fallback to zero: %v", err)
+	}
+	if failed > 0 {
+		log.Printf("8h change completed with %d fallback symbols", failed)
 	}
 	return nil
 }
@@ -560,34 +808,28 @@ func currentEightHourSegmentStart() time.Time {
 }
 
 func (p *BinanceProvider) fetchEightHourChange(ctx context.Context, symbol string, lastPrice float64, startTimeMs int64) (float64, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, binanceKlinesURL, nil)
+	payload, err := doJSONRequest[[][]any](
+		ctx,
+		p.client,
+		fmt.Sprintf("binance 8h kline %s", symbol),
+		"binance",
+		binanceMinRequestGap,
+		func() (*http.Request, error) {
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, binanceKlinesURL, nil)
+			if err != nil {
+				return nil, err
+			}
+			query := req.URL.Query()
+			query.Set("symbol", symbol)
+			query.Set("interval", "8h")
+			query.Set("startTime", strconv.FormatInt(startTimeMs, 10))
+			query.Set("limit", "1")
+			req.URL.RawQuery = query.Encode()
+			return req, nil
+		},
+	)
 	if err != nil {
-		return 0, fmt.Errorf("build 8h kline request: %w", err)
-	}
-
-	query := req.URL.Query()
-	query.Set("symbol", symbol)
-	query.Set("interval", "8h")
-	query.Set("startTime", strconv.FormatInt(startTimeMs, 10))
-	query.Set("limit", "1")
-	req.URL.RawQuery = query.Encode()
-
-	resp, err := p.client.Do(req)
-	if err != nil {
-		return 0, fmt.Errorf("request 8h kline: %w", err)
-	}
-
-	var payload [][]any
-	decodeErr := json.NewDecoder(resp.Body).Decode(&payload)
-	closeErr := resp.Body.Close()
-	if decodeErr != nil {
-		return 0, fmt.Errorf("decode 8h kline: %w", decodeErr)
-	}
-	if closeErr != nil {
-		return 0, fmt.Errorf("close 8h kline body: %w", closeErr)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("8h kline returned HTTP %d", resp.StatusCode)
+		return 0, err
 	}
 	if len(payload) == 0 || len(payload[0]) < 2 {
 		return 0, errors.New("8h kline payload is empty")
@@ -621,35 +863,30 @@ func (p *BinanceProvider) FetchAssetHistory(ctx context.Context, symbol string, 
 }
 
 func (p *BinanceProvider) fetchKlines(ctx context.Context, symbol string, timeframe TimeframeConfig, startDate, endDate time.Time) ([]dataPoint, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, binanceKlinesURL, nil)
+	payload, err := doJSONRequest[[][]any](
+		ctx,
+		p.client,
+		fmt.Sprintf("binance klines %s %s", symbol, timeframe.Name),
+		"binance",
+		binanceMinRequestGap,
+		func() (*http.Request, error) {
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, binanceKlinesURL, nil)
+			if err != nil {
+				return nil, err
+			}
+
+			query := req.URL.Query()
+			query.Set("symbol", symbol)
+			query.Set("interval", timeframe.BinanceInterval)
+			query.Set("limit", strconv.Itoa(timeframe.HistoryBars+32))
+			query.Set("startTime", strconv.FormatInt(startDate.UnixMilli(), 10))
+			query.Set("endTime", strconv.FormatInt(endDate.Add(timeframe.CandleDuration-time.Millisecond).UnixMilli(), 10))
+			req.URL.RawQuery = query.Encode()
+			return req, nil
+		},
+	)
 	if err != nil {
-		return nil, fmt.Errorf("build binance klines request: %w", err)
-	}
-
-	query := req.URL.Query()
-	query.Set("symbol", symbol)
-	query.Set("interval", timeframe.BinanceInterval)
-	query.Set("limit", strconv.Itoa(timeframe.HistoryBars+16))
-	query.Set("startTime", strconv.FormatInt(startDate.UnixMilli(), 10))
-	query.Set("endTime", strconv.FormatInt(endDate.UnixMilli(), 10))
-	req.URL.RawQuery = query.Encode()
-
-	resp, err := p.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("request binance klines: %w", err)
-	}
-
-	var payload [][]any
-	decodeErr := json.NewDecoder(resp.Body).Decode(&payload)
-	closeErr := resp.Body.Close()
-	if decodeErr != nil {
-		return nil, fmt.Errorf("decode binance klines: %w", decodeErr)
-	}
-	if closeErr != nil {
-		return nil, fmt.Errorf("close binance klines body: %w", closeErr)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("binance klines returned HTTP %d", resp.StatusCode)
+		return nil, err
 	}
 
 	candles := make([]dataPoint, 0, len(payload))
@@ -686,6 +923,104 @@ func (p *BinanceProvider) fetchKlines(ctx context.Context, symbol string, timefr
 	return deduplicateSeries(candles), nil
 }
 
+func (p *BybitProvider) Name() string {
+	return "bybit"
+}
+
+func (p *BybitProvider) FetchBenchmarkHistory(ctx context.Context, timeframe TimeframeConfig, startDate, endDate time.Time) (string, []dataPoint, error) {
+	series, err := p.fetchKlines(ctx, "BTCUSDT", timeframe, startDate, endDate)
+	if err != nil {
+		return "", nil, err
+	}
+	return "BTCUSDT", series, nil
+}
+
+func (p *BybitProvider) FetchAssetHistory(ctx context.Context, symbol string, timeframe TimeframeConfig, startDate, endDate time.Time) (string, string, []dataPoint, error) {
+	if _, exists := p.unsupported.Load(symbol); exists {
+		return "", "", nil, errSymbolUnsupported
+	}
+
+	series, err := p.fetchKlines(ctx, symbol, timeframe, startDate, endDate)
+	if err != nil {
+		if errors.Is(err, errSymbolUnsupported) {
+			p.unsupported.Store(symbol, true)
+		}
+		return "", "", nil, err
+	}
+	return symbol, fmt.Sprintf("%s vs BTCUSDT", symbol), series, nil
+}
+
+func (p *BybitProvider) fetchKlines(ctx context.Context, symbol string, timeframe TimeframeConfig, startDate, endDate time.Time) ([]dataPoint, error) {
+	payload, err := doJSONRequest[bybitKlineResponse](
+		ctx,
+		p.client,
+		fmt.Sprintf("bybit klines %s %s", symbol, timeframe.Name),
+		"bybit",
+		bybitMinRequestGap,
+		func() (*http.Request, error) {
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, bybitKlinesURL, nil)
+			if err != nil {
+				return nil, err
+			}
+
+			query := req.URL.Query()
+			query.Set("category", "linear")
+			query.Set("symbol", symbol)
+			query.Set("interval", timeframe.BybitInterval)
+			query.Set("start", strconv.FormatInt(startDate.UnixMilli(), 10))
+			query.Set("end", strconv.FormatInt(endDate.Add(timeframe.CandleDuration-time.Millisecond).UnixMilli(), 10))
+			query.Set("limit", strconv.Itoa(timeframe.HistoryBars+32))
+			req.URL.RawQuery = query.Encode()
+			return req, nil
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	if payload.RetCode != 0 {
+		if strings.Contains(strings.ToLower(payload.RetMsg), "symbol") && strings.Contains(strings.ToLower(payload.RetMsg), "invalid") {
+			return nil, errSymbolUnsupported
+		}
+		return nil, fmt.Errorf("bybit api error: %s", payload.RetMsg)
+	}
+	if len(payload.Result.List) == 0 {
+		return nil, fmt.Errorf("no bybit klines returned for %s %s", symbol, timeframe.Name)
+	}
+
+	candles := make([]dataPoint, 0, len(payload.Result.List))
+	for _, row := range payload.Result.List {
+		if len(row) < 5 {
+			return nil, errors.New("bybit kline row does not contain close price")
+		}
+
+		tsMillis, err := strconv.ParseInt(row[0], 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("parse bybit open time %q: %w", row[0], err)
+		}
+		closePrice, err := strconv.ParseFloat(row[4], 64)
+		if err != nil {
+			return nil, fmt.Errorf("parse bybit close price %q: %w", row[4], err)
+		}
+
+		timestamp := time.UnixMilli(tsMillis).UTC()
+		if !timestamp.Before(startDate) && !timestamp.After(endDate) {
+			candles = append(candles, dataPoint{
+				Time:  timestamp,
+				Close: closePrice,
+			})
+		}
+	}
+
+	if len(candles) == 0 {
+		return nil, fmt.Errorf("no bybit candles remained after filtering for %s %s", symbol, timeframe.Name)
+	}
+
+	sort.Slice(candles, func(i, j int) bool {
+		return candles[i].Time.Before(candles[j].Time)
+	})
+	return deduplicateSeries(candles), nil
+}
+
 func (p *OKXProvider) Name() string {
 	return "okx"
 }
@@ -700,17 +1035,24 @@ func (p *OKXProvider) FetchBenchmarkHistory(ctx context.Context, timeframe Timef
 
 func (p *OKXProvider) FetchAssetHistory(ctx context.Context, symbol string, timeframe TimeframeConfig, startDate, endDate time.Time) (string, string, []dataPoint, error) {
 	if !strings.HasSuffix(symbol, "USDT") {
-		return "", "", nil, fmt.Errorf("unsupported OKX symbol %s", symbol)
+		return "", "", nil, errSymbolUnsupported
 	}
 
 	base := strings.TrimSuffix(symbol, "USDT")
 	if base == "" {
-		return "", "", nil, fmt.Errorf("invalid OKX symbol %s", symbol)
+		return "", "", nil, errSymbolUnsupported
 	}
 
 	instID := base + "-USDT"
+	if _, exists := p.unsupported.Load(instID); exists {
+		return "", "", nil, errSymbolUnsupported
+	}
+
 	series, err := p.fetchHistoricalData(ctx, instID, timeframe, startDate, endDate)
 	if err != nil {
+		if errors.Is(err, errSymbolUnsupported) {
+			p.unsupported.Store(instID, true)
+		}
 		return "", "", nil, err
 	}
 	return instID, fmt.Sprintf("%s vs BTC-USDT", instID), series, nil
@@ -721,38 +1063,36 @@ func (p *OKXProvider) fetchHistoricalData(ctx context.Context, instID string, ti
 	var cursor string
 
 	for {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, okxHistoryCandlesURL, nil)
+		payload, err := doJSONRequest[okxResponse](
+			ctx,
+			p.client,
+			fmt.Sprintf("okx klines %s %s", instID, timeframe.Name),
+			"okx",
+			okxMinRequestGap,
+			func() (*http.Request, error) {
+				req, err := http.NewRequestWithContext(ctx, http.MethodGet, okxHistoryCandlesURL, nil)
+				if err != nil {
+					return nil, err
+				}
+
+				query := req.URL.Query()
+				query.Set("instId", instID)
+				query.Set("bar", timeframe.OKXBar)
+				query.Set("limit", strconv.Itoa(pageLimit))
+				if cursor != "" {
+					query.Set("after", cursor)
+				}
+				req.URL.RawQuery = query.Encode()
+				return req, nil
+			},
+		)
 		if err != nil {
-			return nil, fmt.Errorf("build OKX request: %w", err)
-		}
-
-		query := req.URL.Query()
-		query.Set("instId", instID)
-		query.Set("bar", timeframe.OKXBar)
-		query.Set("limit", strconv.Itoa(pageLimit))
-		if cursor != "" {
-			query.Set("after", cursor)
-		}
-		req.URL.RawQuery = query.Encode()
-
-		resp, err := p.client.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("request OKX history candles: %w", err)
-		}
-
-		var payload okxResponse
-		decodeErr := json.NewDecoder(resp.Body).Decode(&payload)
-		closeErr := resp.Body.Close()
-		if decodeErr != nil {
-			return nil, fmt.Errorf("decode OKX response: %w", decodeErr)
-		}
-		if closeErr != nil {
-			return nil, fmt.Errorf("close OKX body: %w", closeErr)
-		}
-		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("OKX returned HTTP %d", resp.StatusCode)
+			return nil, err
 		}
 		if payload.Code != "0" {
+			if strings.Contains(strings.ToLower(payload.Msg), "doesn't exist") {
+				return nil, errSymbolUnsupported
+			}
 			return nil, fmt.Errorf("OKX API error: %s", payload.Msg)
 		}
 		if len(payload.Data) == 0 {
