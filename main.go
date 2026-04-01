@@ -23,7 +23,7 @@ func main() {
 		datasetTTL:        time.Hour,
 		universeTTL:       time.Hour,
 		rollingWindow:     30,
-		minUniverseVolume: 100000000,
+		minUniverseVolume: 200000000,
 	}
 
 	port := os.Getenv("PORT")

@@ -14,8 +14,8 @@ Current scope / 当前范围：
 - 标的必须以 `USDT` 结尾
 - excludes `BTCUSDT`
 - 排除 `BTCUSDT`
-- `quoteVolume >= 100000000`
-- `quoteVolume >= 100000000`
+- `quoteVolume >= 200000000`
+- `quoteVolume >= 200000000`
 - Multi-timeframe factor boards / 多周期因子面板：
 - `4H`
 - `1D`
