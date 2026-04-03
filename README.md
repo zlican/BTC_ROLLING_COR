@@ -7,15 +7,10 @@ This project is a Go backend plus static frontend dashboard for crypto factor mo
 
 Current scope / 当前范围：
 
-- Dynamic symbol universe from Binance USD-M futures `24hr ticker`
-- 标的池来自 Binance U 本位合约 `24hr ticker` 动态接口
-- Universe filter / 标的池过滤规则：
-- symbol ends with `USDT`
-- 标的必须以 `USDT` 结尾
-- excludes `BTCUSDT`
-- 排除 `BTCUSDT`
-- `quoteVolume >= 200000000`
-- `quoteVolume >= 200000000`
+- Fixed symbol universe loaded from `symbols.json`
+- 固定标的池通过 `symbols.json` 加载
+- Universe members / 当前标的名单见：
+- `symbols.json`
 - Multi-timeframe factor boards / 多周期因子面板：
 - `1H`
 - `4H`
@@ -24,8 +19,8 @@ Current scope / 当前范围：
 - Two return-based factors / 两个基于收益率的因子：
 - `corr`
 - `beta`
-- 8-hour change from Binance futures `8h` klines
-- 8 小时涨跌幅来自 Binance 合约 `8h` K 线
+- 8-hour change still enriched from Binance futures `8h` klines
+- 8 小时涨跌幅仍通过 Binance 合约 `8h` K 线补充
 - Main page / 主页面支持：
 - timeframe board switch / 周期面板切换
 - column sort / 列排序
@@ -117,10 +112,12 @@ Only one signal tag can be selected at a time.
 - `main.go`
 - app bootstrap / 程序入口
 - `service.go`
-- dynamic universe / 动态标的池
+- fixed universe loading / 固定标的配置加载
 - market data providers / 多数据源提供器
 - retries and pacing / 重试与节流
 - factor calculation / 因子计算
+- `symbols.json`
+- fixed symbol list config / 固定标的名单配置
 - `server.go`
 - HTTP routes / HTTP 路由
 - API serialization / API 输出结构
@@ -182,6 +179,19 @@ Run / 运行：
 go run .
 ```
 
+Edit symbols / 修改标的：
+
+```json
+{
+  "symbols": ["ETHUSDT", "SOLUSDT", "XRPUSDT"]
+}
+```
+
+- Update `symbols.json` instead of editing Go code.
+- 以后修改标的时直接更新 `symbols.json`，不需要改 Go 代码。
+- Restart the service after editing `symbols.json`.
+- 修改 `symbols.json` 后重启服务即可生效。
+
 Open / 打开：
 
 ```text
@@ -205,8 +215,8 @@ go build .
 
 ## Notes / 说明
 
-- Newly listed symbols may appear in the universe but still lack enough `1W` history.
-- 新上市标的可能已经进入动态标的池，但仍然缺少足够的 `1W` 历史。
+- Some fixed-list symbols may still lack enough `1W` history.
+- 固定名单中的部分标的仍可能缺少足够的 `1W` 历史。
 - Some symbols can be present only on Binance and absent on Bybit or OKX.
 - 有些标的可能只在 Binance 可用，在 Bybit 或 OKX 不存在。
 - For short-history assets, backend may return `insufficient_history` for some frames.

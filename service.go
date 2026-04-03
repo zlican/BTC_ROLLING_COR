@@ -219,7 +219,7 @@ type FactorService struct {
 	datasetTTL        time.Duration
 	universeTTL       time.Duration
 	rollingWindow     int
-	minUniverseVolume float64
+	fixedUniversePath string
 
 	datasetMu       sync.RWMutex
 	datasetCachedAt time.Time
@@ -488,7 +488,7 @@ func (s *FactorService) refresh(ctx context.Context) (*FactorDataset, error) {
 		RollingWindow:       s.rollingWindow,
 		UpdatedAt:           time.Now().UTC(),
 		UniverseUpdatedAt:   universeUpdatedAt,
-		UniverseMinQuoteVol: s.minUniverseVolume,
+		UniverseMinQuoteVol: 0,
 		Assets:              make(map[string]*AssetSeries),
 	}
 
@@ -697,7 +697,12 @@ func (s *FactorService) getDynamicUniverse(ctx context.Context) ([]AssetConfig, 
 		return cloneAssetConfigs(s.universeCachedList), s.universeUpdatedAt, nil
 	}
 
-	assets, updatedAt, err := s.universeProvider.FetchDynamicUniverse(ctx, s.minUniverseVolume)
+	symbols, err := loadFixedUniverseSymbols(s.fixedUniversePath)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+
+	assets, updatedAt, err := s.universeProvider.FetchFixedUniverse(ctx, symbols)
 	if err != nil {
 		return nil, time.Time{}, err
 	}
@@ -714,11 +719,83 @@ func cloneAssetConfigs(items []AssetConfig) []AssetConfig {
 	return out
 }
 
+type fixedUniverseFile struct {
+	Symbols []string `json:"symbols"`
+}
+
+func loadFixedUniverseSymbols(path string) ([]string, error) {
+	if strings.TrimSpace(path) == "" {
+		return nil, errors.New("fixed universe path is empty")
+	}
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read fixed universe config %q: %w", path, err)
+	}
+
+	var wrapped fixedUniverseFile
+	if err := json.Unmarshal(content, &wrapped); err == nil && len(wrapped.Symbols) > 0 {
+		return normalizeUniverseSymbols(wrapped.Symbols)
+	}
+
+	var symbols []string
+	if err := json.Unmarshal(content, &symbols); err != nil {
+		return nil, fmt.Errorf("decode fixed universe config %q: %w", path, err)
+	}
+
+	return normalizeUniverseSymbols(symbols)
+}
+
+func normalizeUniverseSymbols(symbols []string) ([]string, error) {
+	normalized := make([]string, 0, len(symbols))
+	seen := make(map[string]struct{}, len(symbols))
+
+	for _, symbol := range symbols {
+		value := strings.ToUpper(strings.TrimSpace(symbol))
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		normalized = append(normalized, value)
+	}
+
+	if len(normalized) == 0 {
+		return nil, errors.New("fixed universe config does not contain any valid symbols")
+	}
+	return normalized, nil
+}
+
 func (p *BinanceProvider) Name() string {
 	return "binance"
 }
 
-func (p *BinanceProvider) FetchDynamicUniverse(ctx context.Context, minQuoteVolume float64) ([]AssetConfig, time.Time, error) {
+func (p *BinanceProvider) FetchFixedUniverse(ctx context.Context, symbols []string) ([]AssetConfig, time.Time, error) {
+	if len(symbols) == 0 {
+		return nil, time.Time{}, errors.New("fixed universe is empty")
+	}
+
+	requested := make(map[string]struct{}, len(symbols))
+	assetsBySymbol := make(map[string]AssetConfig, len(symbols))
+	for index, symbol := range symbols {
+		normalized := strings.ToUpper(strings.TrimSpace(symbol))
+		if normalized == "" {
+			continue
+		}
+		requested[normalized] = struct{}{}
+		displayName := strings.TrimSuffix(normalized, "USDT")
+		if displayName == "" {
+			displayName = normalized
+		}
+		assetsBySymbol[normalized] = AssetConfig{
+			Symbol:       normalized,
+			DisplayName:  displayName,
+			UniverseRank: index + 1,
+		}
+	}
+
 	payload, err := doJSONRequest[[]binanceTickerItem](
 		ctx,
 		p.client,
@@ -730,17 +807,17 @@ func (p *BinanceProvider) FetchDynamicUniverse(ctx context.Context, minQuoteVolu
 		},
 	)
 	if err != nil {
-		return nil, time.Time{}, err
+		assets := flattenAssetConfigMap(assetsBySymbol, symbols)
+		return assets, time.Now().UTC(), nil
 	}
 
-	var assets []AssetConfig
 	for _, item := range payload {
-		if !strings.HasSuffix(item.Symbol, "USDT") || item.Symbol == "BTCUSDT" {
+		if _, ok := requested[item.Symbol]; !ok {
 			continue
 		}
 
 		quoteVolume, err := strconv.ParseFloat(item.QuoteVolume, 64)
-		if err != nil || quoteVolume < minQuoteVolume {
+		if err != nil {
 			continue
 		}
 		lastPrice, err := strconv.ParseFloat(item.LastPrice, 64)
@@ -748,35 +825,32 @@ func (p *BinanceProvider) FetchDynamicUniverse(ctx context.Context, minQuoteVolu
 			continue
 		}
 
-		displayName := strings.TrimSuffix(item.Symbol, "USDT")
-		if displayName == "" {
-			displayName = item.Symbol
-		}
-
-		assets = append(assets, AssetConfig{
-			Symbol:      item.Symbol,
-			DisplayName: displayName,
-			QuoteVolume: quoteVolume,
-			LastPrice:   lastPrice,
-		})
+		cfg := assetsBySymbol[item.Symbol]
+		cfg.QuoteVolume = quoteVolume
+		cfg.LastPrice = lastPrice
+		assetsBySymbol[item.Symbol] = cfg
 	}
 
-	sort.Slice(assets, func(i, j int) bool {
-		if assets[i].QuoteVolume == assets[j].QuoteVolume {
-			return assets[i].Symbol < assets[j].Symbol
-		}
-		return assets[i].QuoteVolume > assets[j].QuoteVolume
-	})
-
-	for i := range assets {
-		assets[i].UniverseRank = i + 1
-	}
+	assets := flattenAssetConfigMap(assetsBySymbol, symbols)
 
 	if err := p.attachEightHourChanges(ctx, assets); err != nil {
-		return nil, time.Time{}, err
+		log.Printf("fixed universe 8h enrichment completed with fallbacks: %v", err)
 	}
 
 	return assets, time.Now().UTC(), nil
+}
+
+func flattenAssetConfigMap(items map[string]AssetConfig, order []string) []AssetConfig {
+	assets := make([]AssetConfig, 0, len(order))
+	for _, symbol := range order {
+		normalized := strings.ToUpper(strings.TrimSpace(symbol))
+		cfg, ok := items[normalized]
+		if !ok {
+			continue
+		}
+		assets = append(assets, cfg)
+	}
+	return assets
 }
 
 func (p *BinanceProvider) attachEightHourChanges(ctx context.Context, assets []AssetConfig) error {
