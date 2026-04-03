@@ -50,6 +50,14 @@ type TimeframeConfig struct {
 }
 
 var timeframeConfigs = map[string]TimeframeConfig{
+	"1H": {
+		Name:            "1H",
+		BinanceInterval: "1h",
+		BybitInterval:   "60",
+		OKXBar:          "1H",
+		CandleDuration:  time.Hour,
+		HistoryBars:     240,
+	},
 	"4H": {
 		Name:            "4H",
 		BinanceInterval: "4h",
@@ -76,7 +84,7 @@ var timeframeConfigs = map[string]TimeframeConfig{
 	},
 }
 
-var supportedTimeframes = []string{"4H", "1D", "1W"}
+var supportedTimeframes = []string{"1H", "4H", "1D", "1W"}
 
 const (
 	statusOK                  = "ok"
@@ -105,22 +113,18 @@ type FactorPoint struct {
 }
 
 type FactorFrame struct {
-	Timeframe      string        `json:"timeframe"`
-	InstID         string        `json:"inst_id"`
-	PairLabel      string        `json:"pair_label"`
-	BenchmarkInst  string        `json:"benchmark_inst"`
-	DataSource     string        `json:"data_source"`
-	Status         string        `json:"status"`
-	SignalCode     string        `json:"signal_code"`
-	LatestTime     time.Time     `json:"latest_time"`
-	LatestCorr     float64       `json:"latest_corr"`
-	LatestBeta     float64       `json:"latest_beta"`
-	LatestResidual float64       `json:"latest_residual"`
-	LatestLagCorr  float64       `json:"latest_lag_corr"`
-	CorrPoints     []FactorPoint `json:"corr,omitempty"`
-	BetaPoints     []FactorPoint `json:"beta,omitempty"`
-	ResidualPoints []FactorPoint `json:"residual,omitempty"`
-	LagCorrPoints  []FactorPoint `json:"lag_corr,omitempty"`
+	Timeframe     string        `json:"timeframe"`
+	InstID        string        `json:"inst_id"`
+	PairLabel     string        `json:"pair_label"`
+	BenchmarkInst string        `json:"benchmark_inst"`
+	DataSource    string        `json:"data_source"`
+	Status        string        `json:"status"`
+	SignalCode    string        `json:"signal_code"`
+	LatestTime    time.Time     `json:"latest_time"`
+	LatestCorr    float64       `json:"latest_corr"`
+	LatestBeta    float64       `json:"latest_beta"`
+	CorrPoints    []FactorPoint `json:"corr,omitempty"`
+	BetaPoints    []FactorPoint `json:"beta,omitempty"`
 }
 
 type AssetSeries struct {
@@ -506,9 +510,10 @@ func (s *FactorService) refresh(ctx context.Context) (*FactorDataset, error) {
 			timeframeCounts[timeframeName]++
 		}
 	}
-	log.Printf("dataset refreshed: universe=%d assets=%d 4H=%d 1D=%d 1W=%d",
+	log.Printf("dataset refreshed: universe=%d assets=%d 1H=%d 4H=%d 1D=%d 1W=%d",
 		len(assets),
 		len(dataset.Order),
+		timeframeCounts["1H"],
 		timeframeCounts["4H"],
 		timeframeCounts["1D"],
 		timeframeCounts["1W"],
@@ -664,7 +669,7 @@ func placeholderFrame(timeframe string, dates []time.Time, instID, pairLabel, be
 }
 
 func pickPrimaryFrame(frames map[string]*FactorFrame) *FactorFrame {
-	for _, timeframeName := range []string{"1D", "4H", "1W"} {
+	for _, timeframeName := range []string{"1D", "1H", "4H", "1W"} {
 		if frame, ok := frames[timeframeName]; ok {
 			return frame
 		}
@@ -1168,6 +1173,9 @@ func timeframeCompletedBoundary(cfg TimeframeConfig, now time.Time) time.Time {
 	now = now.UTC()
 
 	switch cfg.Name {
+	case "1H":
+		current := now.Truncate(time.Hour)
+		return current.Add(-time.Hour)
 	case "4H":
 		current := time.Date(now.Year(), now.Month(), now.Day(), (now.Hour()/4)*4, 0, 0, 0, time.UTC)
 		return current.Add(-4 * time.Hour)
@@ -1214,39 +1222,23 @@ func buildFactorFrame(timeframe string, dates []time.Time, assetReturns, benchma
 		return nil, err
 	}
 
-	betaPoints, betaValues, err := rollingBetaPoints(dates, assetReturns, benchmarkReturns, window)
-	if err != nil {
-		return nil, err
-	}
-
-	residualPoints, err := residualPointsFromBeta(dates, assetReturns, benchmarkReturns, betaValues, window)
-	if err != nil {
-		return nil, err
-	}
-
-	lagCorrPoints, err := rollingLagCorrelationPoints(dates, assetReturns, benchmarkReturns, window, 1)
+	betaPoints, _, err := rollingBetaPoints(dates, assetReturns, benchmarkReturns, window)
 	if err != nil {
 		return nil, err
 	}
 
 	latestCorr := corrPoints[len(corrPoints)-1]
 	latestBeta := betaPoints[len(betaPoints)-1]
-	latestResidual := residualPoints[len(residualPoints)-1]
-	latestLagCorr := lagCorrPoints[len(lagCorrPoints)-1]
 
 	return &FactorFrame{
-		Timeframe:      timeframe,
-		Status:         statusOK,
-		SignalCode:     classifySignalCode(latestCorr.Value, latestBeta.Value),
-		LatestTime:     latestCorr.Time,
-		LatestCorr:     latestCorr.Value,
-		LatestBeta:     latestBeta.Value,
-		LatestResidual: latestResidual.Value,
-		LatestLagCorr:  latestLagCorr.Value,
-		CorrPoints:     corrPoints,
-		BetaPoints:     betaPoints,
-		ResidualPoints: residualPoints,
-		LagCorrPoints:  lagCorrPoints,
+		Timeframe:  timeframe,
+		Status:     statusOK,
+		SignalCode: classifySignalCode(latestCorr.Value, latestBeta.Value),
+		LatestTime: latestCorr.Time,
+		LatestCorr: latestCorr.Value,
+		LatestBeta: latestBeta.Value,
+		CorrPoints: corrPoints,
+		BetaPoints: betaPoints,
 	}, nil
 }
 
@@ -1370,40 +1362,6 @@ func rollingBetaPoints(dates []time.Time, assetReturns, benchmarkReturns []float
 	}
 
 	return valuesToPoints(dates, values, window), values, nil
-}
-
-func residualPointsFromBeta(dates []time.Time, assetReturns, benchmarkReturns, betaValues []float64, window int) ([]FactorPoint, error) {
-	if len(assetReturns) != len(benchmarkReturns) {
-		return nil, errors.New("series length mismatch")
-	}
-	expected := len(assetReturns) - window + 1
-	if expected <= 0 || len(betaValues) != expected {
-		return nil, errors.New("beta series length mismatch")
-	}
-
-	values := make([]float64, 0, len(betaValues))
-	for i, beta := range betaValues {
-		index := i + window - 1
-		values = append(values, assetReturns[index]-beta*benchmarkReturns[index])
-	}
-	return valuesToPoints(dates, values, window), nil
-}
-
-func rollingLagCorrelationPoints(dates []time.Time, assetReturns, benchmarkReturns []float64, window, lag int) ([]FactorPoint, error) {
-	if lag <= 0 {
-		return rollingCorrelationPoints(dates, assetReturns, benchmarkReturns, window)
-	}
-	if len(assetReturns) != len(benchmarkReturns) {
-		return nil, errors.New("series length mismatch")
-	}
-	if len(assetReturns) <= lag {
-		return nil, fmt.Errorf("series length %d is not greater than lag %d", len(assetReturns), lag)
-	}
-
-	laggedAsset := append([]float64(nil), assetReturns[lag:]...)
-	leadingBenchmark := append([]float64(nil), benchmarkReturns[:len(benchmarkReturns)-lag]...)
-	lagDates := append([]time.Time(nil), dates[lag:]...)
-	return rollingCorrelationPoints(lagDates, laggedAsset, leadingBenchmark, window)
 }
 
 func valuesToPoints(dates []time.Time, values []float64, window int) []FactorPoint {

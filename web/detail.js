@@ -13,8 +13,6 @@ const AUTO_REFRESH_MS = 60 * 60 * 1000;
 const factorMap = {
   corr: { label: "Corr", key: "corr_points", latestKey: "corr", color: "#c9632b" },
   beta: { label: "Beta", key: "beta_points", latestKey: "beta", color: "#2f7d6a" },
-  residual: { label: "Residual", key: "residual_points", latestKey: "residual", color: "#8757d7" },
-  lag_corr: { label: "Lag Corr", key: "lag_corr_points", latestKey: "lag_corr", color: "#a23d36" },
 };
 const signalMeta = {
   follow: { label: "跟随" },
@@ -161,7 +159,7 @@ function renderHeader() {
     return;
   }
 
-  detailTitle.textContent = `${detailPayload.asset.display_name || detailPayload.asset.symbol} ${frame.timeframe} 四因子详情`;
+  detailTitle.textContent = `${detailPayload.asset.display_name || detailPayload.asset.symbol} ${frame.timeframe} 双因子详情`;
   detailSubtitle.textContent = `${frame.pair_label} | 数据源 ${(frame.data_source || detailPayload.asset.data_source || "-").toUpperCase()} | 基准 ${frame.benchmark_inst} | 8H 涨跌幅 ${formatPct(detailPayload.asset.eight_hour_pct)} | 当前图表 ${factorMap[selectedFactor].label}`;
   detailLatestTime.textContent = formatDateTime(frame.latest_time);
   detailSignal.textContent = getFrameBadge(frame);

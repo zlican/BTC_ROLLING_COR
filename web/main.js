@@ -13,7 +13,7 @@ const timeframeBoards = document.getElementById("timeframeBoards");
 const signalFilterButtons = Array.from(document.querySelectorAll(".signal-filter-chip"));
 
 const AUTO_REFRESH_MS = 60 * 60 * 1000;
-const FALLBACK_TIMEFRAMES = ["4H", "1D", "1W"];
+const FALLBACK_TIMEFRAMES = ["1H", "4H", "1D", "1W"];
 const signalMeta = {
   follow: { label: "跟随", badgeClass: "badge-follow" },
   strong_follow: { label: "强跟随", badgeClass: "badge-strong-follow" },
@@ -90,7 +90,7 @@ function isDisplayableFrame(frame) {
     return false;
   }
 
-  const values = [frame.corr, frame.beta, frame.residual, frame.lag_corr].map((value) => Number(value || 0));
+  const values = [frame.corr, frame.beta].map((value) => Number(value || 0));
   const allZero = values.every((value) => value === 0);
   if (allZero) {
     return false;
@@ -153,8 +153,6 @@ function createRow(asset, frame) {
     <td><span class="timeframe-chip">${frame.timeframe}</span></td>
     <td class="${factorClass(frame.corr)}">${formatFactor(frame.corr)}</td>
     <td class="${factorClass(frame.beta)}">${formatFactor(frame.beta)}</td>
-    <td class="${factorClass(frame.residual)}">${formatFactor(frame.residual)}</td>
-    <td class="${factorClass(frame.lag_corr)}">${formatFactor(frame.lag_corr)}</td>
     <td><span class="signal-badge ${meta.badgeClass}">${meta.label}</span></td>
   `;
 
@@ -242,7 +240,7 @@ function renderRows(items) {
   if (!factorTableBody.children.length) {
     factorTableBody.innerHTML = `
       <tr>
-        <td colspan="8" class="loading-cell">${activeTimeframe} 面板暂无匹配标的</td>
+        <td colspan="6" class="loading-cell">${activeTimeframe} 面板暂无匹配标的</td>
       </tr>
     `;
   }
@@ -253,7 +251,7 @@ async function loadOverview() {
   refreshButton.disabled = true;
   factorTableBody.innerHTML = `
     <tr>
-      <td colspan="8" class="loading-cell">正在刷新数据...</td>
+      <td colspan="6" class="loading-cell">正在刷新数据...</td>
     </tr>
   `;
 
@@ -283,7 +281,7 @@ async function loadOverview() {
     showError(error.message || "加载失败");
     factorTableBody.innerHTML = `
       <tr>
-        <td colspan="8" class="loading-cell">暂无可展示数据</td>
+        <td colspan="6" class="loading-cell">暂无可展示数据</td>
       </tr>
     `;
   } finally {

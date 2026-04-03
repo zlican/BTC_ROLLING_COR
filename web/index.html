@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>收益率四因子总览</title>
+  <title>收益率双因子总览</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">
@@ -16,8 +16,8 @@
     <section class="hero-card">
       <div class="hero-copy">
         <p class="eyebrow">Return Factor Dashboard</p>
-        <h1>动态标的群的 BTC 收益率四因子</h1>
-        <p class="hero-text">标的池来自 Binance USDT 合约动态筛选，按成交额大于 2 亿 USDT 且以 USDT 结尾过滤，并补充 8H 涨跌幅。主页面按 4H、1D、1W 三个独立板块查看，同一套 Corr、Beta、Residual、Lag Corr 因子在不同周期下分开展示。</p>
+        <h1>动态标的群的 BTC 收益率双因子</h1>
+        <p class="hero-text">标的池来自 Binance USDT 合约动态筛选，按成交额大于 2 亿 USDT 且以 USDT 结尾过滤，并补充 8H 涨跌幅。主页面按 1H、4H、1D、1W 四个独立板块查看，仅展示 Corr 与 Beta 两个核心因子。</p>
       </div>
       <div class="hero-meta">
         <div class="meta-item">
@@ -115,28 +115,12 @@
               </th>
               <th>
                 <div class="sortable-head">
-                  <span>Residual</span>
-                  <span class="sort-buttons">
-                    <button class="sort-button" type="button" data-sort-field="residual" data-sort-order="desc">↓</button>
-                    <button class="sort-button" type="button" data-sort-field="residual" data-sort-order="asc">↑</button>
-                  </span>
-                </div>
-              </th>
-              <th>
-                <div class="sortable-head">
-                  <span>Lag Corr</span>
-                  <span class="sort-buttons">
-                    <button class="sort-button" type="button" data-sort-field="lag_corr" data-sort-order="desc">↓</button>
-                    <button class="sort-button" type="button" data-sort-field="lag_corr" data-sort-order="asc">↑</button>
-                  </span>
-                </div>
-              </th>
               <th>信号</th>
             </tr>
           </thead>
           <tbody id="factorTableBody">
             <tr>
-              <td colspan="8" class="loading-cell">正在加载数据...</td>
+              <td colspan="6" class="loading-cell">正在加载数据...</td>
             </tr>
           </tbody>
         </table>
@@ -150,7 +134,7 @@
       <div class="modal-head">
         <div>
           <p class="panel-kicker">Factor Guide</p>
-          <h3 id="guideTitle">四个因子的功能介绍</h3>
+          <h3 id="guideTitle">两个因子的功能介绍</h3>
         </div>
         <button id="closeGuideButton" class="ghost-button" type="button">关闭</button>
       </div>
@@ -164,16 +148,6 @@
           <h4>Beta</h4>
           <p>衡量 BTC 动 1%，标的会放大或缩小多少，反映跟随强度。</p>
           <p class="guide-note">常见解读：`beta &gt; 1.5` 往往是高弹性标的。</p>
-        </article>
-        <article class="guide-item">
-          <h4>Residual</h4>
-          <p>剔除 BTC 影响后的超额收益，是最接近独立 Alpha 的指标。</p>
-          <p class="guide-note">常见解读：`residual &gt; 0` 说明强于 BTC。</p>
-        </article>
-        <article class="guide-item">
-          <h4>Lag Corr</h4>
-          <p>衡量 BTC 先动、标的后动的滞后关系，用来判断传导效应。</p>
-          <p class="guide-note">常见解读：`lag_corr &gt; 0.6` 更像 BTC 带动候选。</p>
         </article>
       </div>
     </section>

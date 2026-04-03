@@ -1,4 +1,4 @@
-# Rolling Correlation Factor Dashboard / 滚动相关四因子看板
+# Rolling Correlation Factor Dashboard / 滚动相关双因子看板
 
 ## Snapshot / 项目快照
 
@@ -17,14 +17,13 @@ Current scope / 当前范围：
 - `quoteVolume >= 200000000`
 - `quoteVolume >= 200000000`
 - Multi-timeframe factor boards / 多周期因子面板：
+- `1H`
 - `4H`
 - `1D`
 - `1W`
-- Four return-based factors / 四个基于收益率的因子：
+- Two return-based factors / 两个基于收益率的因子：
 - `corr`
 - `beta`
-- `residual`
-- `lag_corr`
 - 8-hour change from Binance futures `8h` klines
 - 8 小时涨跌幅来自 Binance 合约 `8h` K 线
 - Main page / 主页面支持：
@@ -157,9 +156,7 @@ Example frame fields / 示例周期帧字段：
   "status": "ok",
   "signal_code": "follow",
   "corr": 0.9123,
-  "beta": 1.1023,
-  "residual": 0.0042,
-  "lag_corr": 0.0831
+  "beta": 1.1023
 }
 ```
 

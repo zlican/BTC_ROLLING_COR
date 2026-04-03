@@ -47,8 +47,6 @@ type OverviewFrameItem struct {
 	LatestTime    string  `json:"latest_time"`
 	Corr          float64 `json:"corr"`
 	Beta          float64 `json:"beta"`
-	Residual      float64 `json:"residual"`
-	LagCorr       float64 `json:"lag_corr"`
 }
 
 type DetailResponse struct {
@@ -72,22 +70,18 @@ type DetailAssetOutput struct {
 }
 
 type DetailFrameOutput struct {
-	Timeframe      string        `json:"timeframe"`
-	InstID         string        `json:"inst_id"`
-	PairLabel      string        `json:"pair_label"`
-	BenchmarkInst  string        `json:"benchmark_inst"`
-	DataSource     string        `json:"data_source"`
-	Status         string        `json:"status"`
-	SignalCode     string        `json:"signal_code"`
-	LatestTime     string        `json:"latest_time"`
-	Corr           float64       `json:"corr"`
-	Beta           float64       `json:"beta"`
-	Residual       float64       `json:"residual"`
-	LagCorr        float64       `json:"lag_corr"`
-	CorrPoints     []PointOutput `json:"corr_points"`
-	BetaPoints     []PointOutput `json:"beta_points"`
-	ResidualPoints []PointOutput `json:"residual_points"`
-	LagCorrPoints  []PointOutput `json:"lag_corr_points"`
+	Timeframe     string        `json:"timeframe"`
+	InstID        string        `json:"inst_id"`
+	PairLabel     string        `json:"pair_label"`
+	BenchmarkInst string        `json:"benchmark_inst"`
+	DataSource    string        `json:"data_source"`
+	Status        string        `json:"status"`
+	SignalCode    string        `json:"signal_code"`
+	LatestTime    string        `json:"latest_time"`
+	Corr          float64       `json:"corr"`
+	Beta          float64       `json:"beta"`
+	CorrPoints    []PointOutput `json:"corr_points"`
+	BetaPoints    []PointOutput `json:"beta_points"`
 }
 
 type PointOutput struct {
@@ -148,8 +142,6 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 				LatestTime:    frame.LatestTime.Format(timeLayout),
 				Corr:          frame.LatestCorr,
 				Beta:          frame.LatestBeta,
-				Residual:      frame.LatestResidual,
-				LagCorr:       frame.LatestLagCorr,
 			})
 		}
 
@@ -198,22 +190,18 @@ func (s *Server) handleDetail(w http.ResponseWriter, r *http.Request) {
 	for _, timeframe := range asset.FrameOrder {
 		frame := asset.Frames[timeframe]
 		frames = append(frames, DetailFrameOutput{
-			Timeframe:      frame.Timeframe,
-			InstID:         frame.InstID,
-			PairLabel:      frame.PairLabel,
-			BenchmarkInst:  frame.BenchmarkInst,
-			DataSource:     frame.DataSource,
-			Status:         frame.Status,
-			SignalCode:     frame.SignalCode,
-			LatestTime:     frame.LatestTime.Format(timeLayout),
-			Corr:           frame.LatestCorr,
-			Beta:           frame.LatestBeta,
-			Residual:       frame.LatestResidual,
-			LagCorr:        frame.LatestLagCorr,
-			CorrPoints:     pointsToOutput(frame.CorrPoints),
-			BetaPoints:     pointsToOutput(frame.BetaPoints),
-			ResidualPoints: pointsToOutput(frame.ResidualPoints),
-			LagCorrPoints:  pointsToOutput(frame.LagCorrPoints),
+			Timeframe:     frame.Timeframe,
+			InstID:        frame.InstID,
+			PairLabel:     frame.PairLabel,
+			BenchmarkInst: frame.BenchmarkInst,
+			DataSource:    frame.DataSource,
+			Status:        frame.Status,
+			SignalCode:    frame.SignalCode,
+			LatestTime:    frame.LatestTime.Format(timeLayout),
+			Corr:          frame.LatestCorr,
+			Beta:          frame.LatestBeta,
+			CorrPoints:    pointsToOutput(frame.CorrPoints),
+			BetaPoints:    pointsToOutput(frame.BetaPoints),
 		})
 	}
 
