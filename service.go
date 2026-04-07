@@ -74,17 +74,17 @@ var timeframeConfigs = map[string]TimeframeConfig{
 		CandleDuration:  24 * time.Hour,
 		HistoryBars:     120,
 	},
-	"1W": {
-		Name:            "1W",
-		BinanceInterval: "1w",
-		BybitInterval:   "W",
-		OKXBar:          "1Wutc",
-		CandleDuration:  7 * 24 * time.Hour,
-		HistoryBars:     104,
+	"3D": {
+		Name:            "3D",
+		BinanceInterval: "3d",
+		BybitInterval:   "",
+		OKXBar:          "3Dutc",
+		CandleDuration:  3 * 24 * time.Hour,
+		HistoryBars:     120,
 	},
 }
 
-var supportedTimeframes = []string{"1H", "4H", "1D", "1W"}
+var supportedTimeframes = []string{"1H", "4H", "1D", "3D"}
 
 const (
 	statusOK                  = "ok"
@@ -510,13 +510,13 @@ func (s *FactorService) refresh(ctx context.Context) (*FactorDataset, error) {
 			timeframeCounts[timeframeName]++
 		}
 	}
-	log.Printf("dataset refreshed: universe=%d assets=%d 1H=%d 4H=%d 1D=%d 1W=%d",
+	log.Printf("dataset refreshed: universe=%d assets=%d 1H=%d 4H=%d 1D=%d 3D=%d",
 		len(assets),
 		len(dataset.Order),
 		timeframeCounts["1H"],
 		timeframeCounts["4H"],
 		timeframeCounts["1D"],
-		timeframeCounts["1W"],
+		timeframeCounts["3D"],
 	)
 
 	sort.Slice(dataset.Order, func(i, j int) bool {
@@ -669,7 +669,7 @@ func placeholderFrame(timeframe string, dates []time.Time, instID, pairLabel, be
 }
 
 func pickPrimaryFrame(frames map[string]*FactorFrame) *FactorFrame {
-	for _, timeframeName := range []string{"1D", "1H", "4H", "1W"} {
+	for _, timeframeName := range []string{"1D", "1H", "4H", "3D"} {
 		if frame, ok := frames[timeframeName]; ok {
 			return frame
 		}
@@ -1043,6 +1043,10 @@ func (p *BybitProvider) FetchAssetHistory(ctx context.Context, symbol string, ti
 }
 
 func (p *BybitProvider) fetchKlines(ctx context.Context, symbol string, timeframe TimeframeConfig, startDate, endDate time.Time) ([]dataPoint, error) {
+	if strings.TrimSpace(timeframe.BybitInterval) == "" {
+		return nil, errSymbolUnsupported
+	}
+
 	payload, err := doJSONRequest[bybitKlineResponse](
 		ctx,
 		p.client,
@@ -1256,11 +1260,12 @@ func timeframeCompletedBoundary(cfg TimeframeConfig, now time.Time) time.Time {
 	case "1D":
 		startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 		return startOfDay.Add(-24 * time.Hour)
-	case "1W":
+	case "3D":
 		startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-		offset := (int(startOfDay.Weekday()) + 6) % 7
-		startOfWeek := startOfDay.AddDate(0, 0, -offset)
-		return startOfWeek.AddDate(0, 0, -7)
+		epochStart := time.Unix(0, 0).UTC()
+		daysSinceEpoch := int(startOfDay.Sub(epochStart) / (24 * time.Hour))
+		segmentStart := startOfDay.AddDate(0, 0, -(daysSinceEpoch % 3))
+		return segmentStart.AddDate(0, 0, -3)
 	default:
 		return now.Truncate(cfg.CandleDuration).Add(-cfg.CandleDuration)
 	}

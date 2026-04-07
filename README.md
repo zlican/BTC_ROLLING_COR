@@ -15,7 +15,7 @@ Current scope / 当前范围：
 - `1H`
 - `4H`
 - `1D`
-- `1W`
+- `3D`
 - Two return-based factors / 两个基于收益率的因子：
 - `corr`
 - `beta`
@@ -215,8 +215,8 @@ go build .
 
 ## Notes / 说明
 
-- Some fixed-list symbols may still lack enough `1W` history.
-- 固定名单中的部分标的仍可能缺少足够的 `1W` 历史。
+- Some fixed-list symbols may still lack enough `3D` history.
+- 固定名单中的部分标的仍可能缺少足够的 `3D` 历史。
 - Some symbols can be present only on Binance and absent on Bybit or OKX.
 - 有些标的可能只在 Binance 可用，在 Bybit 或 OKX 不存在。
 - For short-history assets, backend may return `insufficient_history` for some frames.

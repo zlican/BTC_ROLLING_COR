@@ -13,7 +13,7 @@ const timeframeBoards = document.getElementById("timeframeBoards");
 const signalFilterButtons = Array.from(document.querySelectorAll(".signal-filter-chip"));
 
 const AUTO_REFRESH_MS = 60 * 60 * 1000;
-const FALLBACK_TIMEFRAMES = ["1H", "4H", "1D", "1W"];
+const FALLBACK_TIMEFRAMES = ["1H", "4H", "1D", "3D"];
 const signalMeta = {
   follow: { label: "跟随", badgeClass: "badge-follow" },
   strong_follow: { label: "强跟随", badgeClass: "badge-strong-follow" },
