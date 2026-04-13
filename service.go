@@ -27,18 +27,29 @@ const (
 	okxHistoryCandlesURL = "https://www.okx.com/api/v5/market/history-candles"
 	defaultProxyURL      = "http://127.0.0.1:10809"
 
-	requestTimeout       = 20 * time.Second
-	refreshTimeout       = 3 * time.Minute
-	pageLimit            = 100
-	minReturnVar         = 1e-10
-	maxRequestAttempts   = 4
-	maxErrorBodyPreview  = 256
-	binanceMinRequestGap = 120 * time.Millisecond
-	bybitMinRequestGap   = 120 * time.Millisecond
-	okxMinRequestGap     = 150 * time.Millisecond
+	requestTimeout         = 20 * time.Second
+	refreshTimeout         = 3 * time.Minute
+	pageLimit              = 100
+	minReturnVar           = 1e-10
+	maxRequestAttempts     = 4
+	maxErrorBodyPreview    = 256
+	binanceMinRequestGap   = 120 * time.Millisecond
+	bybitMinRequestGap     = 120 * time.Millisecond
+	okxMinRequestGap       = 150 * time.Millisecond
+	minMomentumQuoteVolume = 100_000_000.0
+	emaPeriod              = 25
+	maPeriod               = 60
 )
 
 var errSymbolUnsupported = errors.New("symbol unsupported by provider")
+
+var skipFixedEightHourSymbols = map[string]struct{}{
+	"ETHUSDT":  {},
+	"SOLUSDT":  {},
+	"BNBUSDT":  {},
+	"XRPUSDT":  {},
+	"DOGEUSDT": {},
+}
 
 type TimeframeConfig struct {
 	Name            string
@@ -105,6 +116,8 @@ type AssetConfig struct {
 	LastPrice    float64
 	EightHourPct float64
 	UniverseRank int
+	Timeframes   []string
+	IsMomentum   bool
 }
 
 type FactorPoint struct {
@@ -173,9 +186,10 @@ type bybitKlineResponse struct {
 }
 
 type binanceTickerItem struct {
-	Symbol      string `json:"symbol"`
-	QuoteVolume string `json:"quoteVolume"`
-	LastPrice   string `json:"lastPrice"`
+	Symbol             string `json:"symbol"`
+	QuoteVolume        string `json:"quoteVolume"`
+	LastPrice          string `json:"lastPrice"`
+	PriceChangePercent string `json:"priceChangePercent"`
 }
 
 type MarketDataProvider interface {
@@ -221,9 +235,10 @@ type FactorService struct {
 	rollingWindow     int
 	fixedUniversePath string
 
-	datasetMu       sync.RWMutex
-	datasetCachedAt time.Time
-	datasetCached   *FactorDataset
+	datasetMu         sync.RWMutex
+	datasetCachedAt   time.Time
+	datasetCached     *FactorDataset
+	datasetRefreshing bool
 
 	universeMu         sync.RWMutex
 	universeCachedAt   time.Time
@@ -406,24 +421,51 @@ func doJSONRequest[T any](ctx context.Context, client *http.Client, requestName,
 
 func (s *FactorService) GetDataset(ctx context.Context) (*FactorDataset, error) {
 	s.datasetMu.RLock()
-	if s.datasetCached != nil && time.Since(s.datasetCachedAt) < s.datasetTTL {
-		cached := s.datasetCached
-		s.datasetMu.RUnlock()
-		return cached, nil
-	}
+	cached := s.datasetCached
+	cachedAt := s.datasetCachedAt
+	refreshing := s.datasetRefreshing
 	s.datasetMu.RUnlock()
 
-	s.datasetMu.Lock()
-	defer s.datasetMu.Unlock()
-
-	if s.datasetCached != nil && time.Since(s.datasetCachedAt) < s.datasetTTL {
-		return s.datasetCached, nil
+	if cached != nil {
+		if time.Since(cachedAt) < s.datasetTTL {
+			return cached, nil
+		}
+		if !refreshing {
+			s.triggerDatasetRefresh()
+		}
+		return cached, nil
 	}
+
+	s.datasetMu.Lock()
+	if s.datasetCached != nil {
+		cached = s.datasetCached
+		cachedAt = s.datasetCachedAt
+		refreshing = s.datasetRefreshing
+		s.datasetMu.Unlock()
+
+		if time.Since(cachedAt) < s.datasetTTL {
+			return cached, nil
+		}
+		if !refreshing {
+			s.triggerDatasetRefresh()
+		}
+		return cached, nil
+	}
+	if s.datasetRefreshing {
+		s.datasetMu.Unlock()
+		return s.waitForDataset(ctx)
+	}
+	s.datasetRefreshing = true
+	s.datasetMu.Unlock()
 
 	refreshCtx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
 	defer cancel()
 
 	dataset, err := s.refresh(refreshCtx)
+
+	s.datasetMu.Lock()
+	defer s.datasetMu.Unlock()
+	s.datasetRefreshing = false
 	if err != nil {
 		return nil, err
 	}
@@ -431,6 +473,67 @@ func (s *FactorService) GetDataset(ctx context.Context) (*FactorDataset, error) 
 	s.datasetCached = dataset
 	s.datasetCachedAt = time.Now().UTC()
 	return dataset, nil
+}
+
+func (s *FactorService) waitForDataset(ctx context.Context) (*FactorDataset, error) {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		s.datasetMu.RLock()
+		cached := s.datasetCached
+		refreshing := s.datasetRefreshing
+		s.datasetMu.RUnlock()
+
+		if cached != nil {
+			return cached, nil
+		}
+		if !refreshing {
+			return nil, errors.New("dataset refresh finished without cached data")
+		}
+
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func (s *FactorService) triggerDatasetRefresh() {
+	s.datasetMu.Lock()
+	if s.datasetRefreshing {
+		s.datasetMu.Unlock()
+		return
+	}
+	s.datasetRefreshing = true
+	s.datasetMu.Unlock()
+
+	go s.refreshDatasetAsync()
+}
+
+func (s *FactorService) refreshDatasetAsync() {
+	refreshCtx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
+	defer cancel()
+
+	dataset, err := s.refresh(refreshCtx)
+
+	s.datasetMu.Lock()
+	defer s.datasetMu.Unlock()
+	s.datasetRefreshing = false
+	if err != nil {
+		log.Printf("dataset background refresh failed, keep stale cache: %v", err)
+		return
+	}
+
+	s.datasetCached = dataset
+	s.datasetCachedAt = time.Now().UTC()
+}
+
+func (s *FactorService) IsDatasetRefreshing() bool {
+	s.datasetMu.RLock()
+	defer s.datasetMu.RUnlock()
+	return s.datasetRefreshing
 }
 
 func (s *FactorService) refresh(ctx context.Context) (*FactorDataset, error) {
@@ -532,10 +635,15 @@ func (s *FactorService) refresh(ctx context.Context) (*FactorDataset, error) {
 }
 
 func (s *FactorService) buildAssetSeries(ctx context.Context, cfg AssetConfig, benchmarkSets map[string]map[string]benchmarkData) assetResult {
-	frames := make(map[string]*FactorFrame, len(supportedTimeframes))
-	frameOrder := make([]string, 0, len(supportedTimeframes))
+	timeframes := cfg.Timeframes
+	if len(timeframes) == 0 {
+		timeframes = supportedTimeframes
+	}
 
-	for _, timeframeName := range supportedTimeframes {
+	frames := make(map[string]*FactorFrame, len(timeframes))
+	frameOrder := make([]string, 0, len(timeframes))
+
+	for _, timeframeName := range timeframes {
 		cfgTimeframe := timeframeConfigs[timeframeName]
 		frameResult := s.fetchFrame(ctx, cfg, cfgTimeframe, benchmarkSets)
 		if frameResult.Frame != nil {
@@ -546,6 +654,13 @@ func (s *FactorService) buildAssetSeries(ctx context.Context, cfg AssetConfig, b
 
 	if len(frameOrder) == 0 {
 		return assetResult{Skip: true}
+	}
+
+	if cfg.IsMomentum {
+		frame, ok := frames["1H"]
+		if !ok || frame == nil || frame.Status != statusOK || frame.LatestCorr >= 0.5 {
+			return assetResult{Skip: true}
+		}
 	}
 
 	primaryFrame := pickPrimaryFrame(frames)
@@ -707,6 +822,16 @@ func (s *FactorService) getDynamicUniverse(ctx context.Context) ([]AssetConfig, 
 		return nil, time.Time{}, err
 	}
 
+	momentumAssets, momentumUpdatedAt, err := s.universeProvider.FetchMomentumUniverse(ctx)
+	if err != nil {
+		log.Printf("binance momentum universe refresh failed: %v", err)
+	} else {
+		assets = mergeAssetConfigs(assets, momentumAssets)
+		if momentumUpdatedAt.After(updatedAt) {
+			updatedAt = momentumUpdatedAt
+		}
+	}
+
 	s.universeCachedList = cloneAssetConfigs(assets)
 	s.universeCachedAt = time.Now().UTC()
 	s.universeUpdatedAt = updatedAt
@@ -716,6 +841,54 @@ func (s *FactorService) getDynamicUniverse(ctx context.Context) ([]AssetConfig, 
 func cloneAssetConfigs(items []AssetConfig) []AssetConfig {
 	out := make([]AssetConfig, len(items))
 	copy(out, items)
+	return out
+}
+
+func mergeAssetConfigs(base, extra []AssetConfig) []AssetConfig {
+	if len(extra) == 0 {
+		return base
+	}
+
+	out := make([]AssetConfig, 0, len(base)+len(extra))
+	indexBySymbol := make(map[string]int, len(base)+len(extra))
+
+	for _, item := range base {
+		cloned := item
+		if len(item.Timeframes) > 0 {
+			cloned.Timeframes = append([]string(nil), item.Timeframes...)
+		}
+		indexBySymbol[item.Symbol] = len(out)
+		out = append(out, cloned)
+	}
+
+	for _, item := range extra {
+		cloned := item
+		if len(item.Timeframes) > 0 {
+			cloned.Timeframes = append([]string(nil), item.Timeframes...)
+		}
+
+		if idx, exists := indexBySymbol[item.Symbol]; exists {
+			existing := out[idx]
+			if existing.QuoteVolume <= 0 && cloned.QuoteVolume > 0 {
+				existing.QuoteVolume = cloned.QuoteVolume
+			}
+			if existing.LastPrice <= 0 && cloned.LastPrice > 0 {
+				existing.LastPrice = cloned.LastPrice
+			}
+			if existing.EightHourPct == 0 && cloned.EightHourPct != 0 {
+				existing.EightHourPct = cloned.EightHourPct
+			}
+			if len(existing.Timeframes) == 0 && len(cloned.Timeframes) > 0 {
+				existing.Timeframes = cloned.Timeframes
+			}
+			out[idx] = existing
+			continue
+		}
+
+		indexBySymbol[item.Symbol] = len(out)
+		out = append(out, cloned)
+	}
+
 	return out
 }
 
@@ -793,19 +966,11 @@ func (p *BinanceProvider) FetchFixedUniverse(ctx context.Context, symbols []stri
 			Symbol:       normalized,
 			DisplayName:  displayName,
 			UniverseRank: index + 1,
+			Timeframes:   append([]string(nil), supportedTimeframes...),
 		}
 	}
 
-	payload, err := doJSONRequest[[]binanceTickerItem](
-		ctx,
-		p.client,
-		"binance ticker 24hr",
-		"binance",
-		binanceMinRequestGap,
-		func() (*http.Request, error) {
-			return http.NewRequestWithContext(ctx, http.MethodGet, binanceTicker24hrURL, nil)
-		},
-	)
+	payload, err := p.fetchTicker24h(ctx)
 	if err != nil {
 		assets := flattenAssetConfigMap(assetsBySymbol, symbols)
 		return assets, time.Now().UTC(), nil
@@ -833,11 +998,103 @@ func (p *BinanceProvider) FetchFixedUniverse(ctx context.Context, symbols []stri
 
 	assets := flattenAssetConfigMap(assetsBySymbol, symbols)
 
-	if err := p.attachEightHourChanges(ctx, assets); err != nil {
+	if err := p.attachEightHourChanges(ctx, assets, skipFixedEightHourSymbols); err != nil {
 		log.Printf("fixed universe 8h enrichment completed with fallbacks: %v", err)
 	}
 
 	return assets, time.Now().UTC(), nil
+}
+
+func (p *BinanceProvider) FetchMomentumUniverse(ctx context.Context) ([]AssetConfig, time.Time, error) {
+	payload, err := p.fetchTicker24h(ctx)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+
+	candidates := make([]AssetConfig, 0, len(payload))
+	for _, item := range payload {
+		if !strings.HasSuffix(item.Symbol, "USDT") || item.Symbol == "BTCUSDT" {
+			continue
+		}
+
+		quoteVolume, err := strconv.ParseFloat(item.QuoteVolume, 64)
+		if err != nil || quoteVolume <= minMomentumQuoteVolume {
+			continue
+		}
+		priceChangePct, err := strconv.ParseFloat(item.PriceChangePercent, 64)
+		if err != nil || priceChangePct <= 0 {
+			continue
+		}
+		lastPrice, err := strconv.ParseFloat(item.LastPrice, 64)
+		if err != nil || lastPrice <= 0 {
+			continue
+		}
+
+		displayName := strings.TrimSuffix(item.Symbol, "USDT")
+		if displayName == "" {
+			displayName = item.Symbol
+		}
+
+		candidates = append(candidates, AssetConfig{
+			Symbol:       item.Symbol,
+			DisplayName:  displayName,
+			QuoteVolume:  quoteVolume,
+			LastPrice:    lastPrice,
+			UniverseRank: len(candidates) + 1,
+			Timeframes:   []string{"1H"},
+			IsMomentum:   true,
+		})
+	}
+
+	if len(candidates) == 0 {
+		return nil, time.Now().UTC(), nil
+	}
+
+	if err := p.attachEightHourChanges(ctx, candidates, nil); err != nil {
+		log.Printf("momentum universe 8h enrichment completed with fallbacks: %v", err)
+	}
+
+	candidates = filterAssetConfigs(candidates, func(item AssetConfig) bool {
+		return item.EightHourPct > 0
+	})
+	if len(candidates) == 0 {
+		return nil, time.Now().UTC(), nil
+	}
+
+	filtered, err := p.filterMomentumTrend(ctx, candidates)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+
+	sort.Slice(filtered, func(i, j int) bool {
+		if filtered[i].EightHourPct == filtered[j].EightHourPct {
+			if filtered[i].QuoteVolume == filtered[j].QuoteVolume {
+				return filtered[i].Symbol < filtered[j].Symbol
+			}
+			return filtered[i].QuoteVolume > filtered[j].QuoteVolume
+		}
+		return filtered[i].EightHourPct > filtered[j].EightHourPct
+	})
+
+	for i := range filtered {
+		filtered[i].UniverseRank = i + 1
+	}
+
+	log.Printf("binance momentum universe selected=%d", len(filtered))
+	return filtered, time.Now().UTC(), nil
+}
+
+func (p *BinanceProvider) fetchTicker24h(ctx context.Context) ([]binanceTickerItem, error) {
+	return doJSONRequest[[]binanceTickerItem](
+		ctx,
+		p.client,
+		"binance ticker 24hr",
+		"binance",
+		binanceMinRequestGap,
+		func() (*http.Request, error) {
+			return http.NewRequestWithContext(ctx, http.MethodGet, binanceTicker24hrURL, nil)
+		},
+	)
 }
 
 func flattenAssetConfigMap(items map[string]AssetConfig, order []string) []AssetConfig {
@@ -853,7 +1110,17 @@ func flattenAssetConfigMap(items map[string]AssetConfig, order []string) []Asset
 	return assets
 }
 
-func (p *BinanceProvider) attachEightHourChanges(ctx context.Context, assets []AssetConfig) error {
+func filterAssetConfigs(items []AssetConfig, keep func(AssetConfig) bool) []AssetConfig {
+	out := make([]AssetConfig, 0, len(items))
+	for _, item := range items {
+		if keep(item) {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func (p *BinanceProvider) attachEightHourChanges(ctx context.Context, assets []AssetConfig, skipSymbols map[string]struct{}) error {
 	if len(assets) == 0 {
 		return nil
 	}
@@ -864,6 +1131,10 @@ func (p *BinanceProvider) attachEightHourChanges(ctx context.Context, assets []A
 	var wg sync.WaitGroup
 
 	for i := range assets {
+		if _, shouldSkip := skipSymbols[assets[i].Symbol]; shouldSkip {
+			continue
+		}
+
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
@@ -897,6 +1168,211 @@ func currentEightHourSegmentStart() time.Time {
 	now := time.Now().UTC()
 	segmentStartHour := (now.Hour() / 8) * 8
 	return time.Date(now.Year(), now.Month(), now.Day(), segmentStartHour, 0, 0, 0, time.UTC)
+}
+
+type assetTrendResult struct {
+	Asset AssetConfig
+	Keep  bool
+	Err   error
+}
+
+func (p *BinanceProvider) filterMomentumTrend(ctx context.Context, assets []AssetConfig) ([]AssetConfig, error) {
+	if len(assets) == 0 {
+		return nil, nil
+	}
+
+	selected := make([]AssetConfig, 0, len(assets))
+	results := make(chan assetTrendResult, len(assets))
+	sem := make(chan struct{}, 6)
+	var wg sync.WaitGroup
+
+	for _, asset := range assets {
+		wg.Add(1)
+		go func(cfg AssetConfig) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			ok, err := p.passesMomentumTrend(ctx, cfg.Symbol, cfg.LastPrice)
+			results <- assetTrendResult{Asset: cfg, Keep: ok, Err: err}
+		}(asset)
+	}
+
+	wg.Wait()
+	close(results)
+
+	var failed int
+	for result := range results {
+		if result.Err != nil {
+			failed++
+			log.Printf("momentum trend filter skipped: %s %v", result.Asset.Symbol, result.Err)
+			continue
+		}
+		if result.Keep {
+			selected = append(selected, result.Asset)
+		}
+	}
+
+	if failed > 0 {
+		log.Printf("momentum trend filter completed with %d skipped symbols", failed)
+	}
+
+	return selected, nil
+}
+
+func (p *BinanceProvider) passesMomentumTrend(ctx context.Context, symbol string, lastPrice float64) (bool, error) {
+	if lastPrice <= 0 {
+		return false, errors.New("last price must be positive")
+	}
+
+	dailyCloses, err := p.fetchRecentCloseSeries(ctx, symbol, "1d", maPeriod+20)
+	if err != nil {
+		return false, fmt.Errorf("1d trend fetch: %w", err)
+	}
+	eightHourCloses, err := p.fetchRecentCloseSeries(ctx, symbol, "8h", maPeriod+20)
+	if err != nil {
+		return false, fmt.Errorf("8h trend fetch: %w", err)
+	}
+
+	dailyEMA, err := emaLatest(dailyCloses, emaPeriod)
+	if err != nil {
+		return false, fmt.Errorf("1d ema25: %w", err)
+	}
+	dailyMA, err := smaLatest(dailyCloses, maPeriod)
+	if err != nil {
+		return false, fmt.Errorf("1d ma60: %w", err)
+	}
+	eightHourEMA, err := emaLatest(eightHourCloses, emaPeriod)
+	if err != nil {
+		return false, fmt.Errorf("8h ema25: %w", err)
+	}
+	eightHourMA, err := smaLatest(eightHourCloses, maPeriod)
+	if err != nil {
+		return false, fmt.Errorf("8h ma60: %w", err)
+	}
+
+	return lastPrice > dailyEMA &&
+		lastPrice > dailyMA &&
+		lastPrice > eightHourEMA &&
+		lastPrice > eightHourMA, nil
+}
+
+func (p *BinanceProvider) fetchRecentCloseSeries(ctx context.Context, symbol, interval string, limit int) ([]float64, error) {
+	if limit <= 0 {
+		return nil, errors.New("limit must be positive")
+	}
+
+	payload, err := doJSONRequest[[][]any](
+		ctx,
+		p.client,
+		fmt.Sprintf("binance klines %s %s recent", symbol, interval),
+		"binance",
+		binanceMinRequestGap,
+		func() (*http.Request, error) {
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, binanceKlinesURL, nil)
+			if err != nil {
+				return nil, err
+			}
+
+			query := req.URL.Query()
+			query.Set("symbol", symbol)
+			query.Set("interval", interval)
+			query.Set("limit", strconv.Itoa(limit))
+			req.URL.RawQuery = query.Encode()
+			return req, nil
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	if len(payload) < maPeriod {
+		return nil, fmt.Errorf("received only %d closes", len(payload))
+	}
+
+	type closePoint struct {
+		Time  time.Time
+		Close float64
+	}
+
+	points := make([]closePoint, 0, len(payload))
+	for _, row := range payload {
+		if len(row) < 5 {
+			return nil, errors.New("binance recent kline row does not contain close price")
+		}
+
+		tsMillis, err := jsonNumberToInt64(row[0])
+		if err != nil {
+			return nil, fmt.Errorf("parse recent kline open time: %w", err)
+		}
+		closePrice, err := jsonNumberToFloat64(row[4])
+		if err != nil {
+			return nil, fmt.Errorf("parse recent kline close price: %w", err)
+		}
+
+		points = append(points, closePoint{
+			Time:  time.UnixMilli(tsMillis).UTC(),
+			Close: closePrice,
+		})
+	}
+
+	sort.Slice(points, func(i, j int) bool {
+		return points[i].Time.Before(points[j].Time)
+	})
+
+	closes := make([]float64, 0, len(points))
+	var lastTime time.Time
+	for _, point := range points {
+		if !lastTime.IsZero() && point.Time.Equal(lastTime) {
+			closes[len(closes)-1] = point.Close
+			continue
+		}
+		lastTime = point.Time
+		closes = append(closes, point.Close)
+	}
+
+	if len(closes) < maPeriod {
+		return nil, fmt.Errorf("deduplicated closes %d smaller than ma period %d", len(closes), maPeriod)
+	}
+
+	return closes, nil
+}
+
+func emaLatest(values []float64, period int) (float64, error) {
+	if period <= 0 {
+		return 0, errors.New("period must be positive")
+	}
+	if len(values) < period {
+		return 0, fmt.Errorf("series length %d smaller than ema period %d", len(values), period)
+	}
+
+	multiplier := 2.0 / float64(period+1)
+	ema := average(values[:period])
+	for _, value := range values[period:] {
+		ema = ((value - ema) * multiplier) + ema
+	}
+	return ema, nil
+}
+
+func smaLatest(values []float64, period int) (float64, error) {
+	if period <= 0 {
+		return 0, errors.New("period must be positive")
+	}
+	if len(values) < period {
+		return 0, fmt.Errorf("series length %d smaller than ma period %d", len(values), period)
+	}
+	return average(values[len(values)-period:]), nil
+}
+
+func average(values []float64) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+
+	var sum float64
+	for _, value := range values {
+		sum += value
+	}
+	return sum / float64(len(values))
 }
 
 func (p *BinanceProvider) fetchEightHourChange(ctx context.Context, symbol string, lastPrice float64, startTimeMs int64) (float64, error) {

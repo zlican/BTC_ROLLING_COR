@@ -20,8 +20,8 @@ func main() {
 	service := &FactorService{
 		universeProvider:  binanceProvider,
 		providers:         []MarketDataProvider{binanceProvider, bybitProvider, okxProvider},
-		datasetTTL:        time.Hour,
-		universeTTL:       time.Hour,
+		datasetTTL:        5 * time.Minute,
+		universeTTL:       5 * time.Minute,
 		rollingWindow:     30,
 		fixedUniversePath: "symbols.json",
 	}

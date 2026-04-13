@@ -12,7 +12,7 @@ const sortButtons = Array.from(document.querySelectorAll(".sort-button"));
 const timeframeBoards = document.getElementById("timeframeBoards");
 const signalFilterButtons = Array.from(document.querySelectorAll(".signal-filter-chip"));
 
-const AUTO_REFRESH_MS = 60 * 60 * 1000;
+const AUTO_REFRESH_MS = 5 * 60 * 1000;
 const FALLBACK_TIMEFRAMES = ["1H", "4H", "1D", "3D"];
 const signalMeta = {
   follow: { label: "跟随", badgeClass: "badge-follow" },
@@ -26,6 +26,7 @@ let activeTimeframe = "1D";
 let sortState = { field: null, order: null };
 let searchKeyword = "";
 let signalFilter = "all";
+let overviewRetryTimer = 0;
 
 function formatDateTime(value) {
   const date = new Date(value);
@@ -246,14 +247,27 @@ function renderRows(items) {
   }
 }
 
+function scheduleOverviewRetry() {
+  if (overviewRetryTimer) {
+    return;
+  }
+  overviewRetryTimer = window.setTimeout(() => {
+    overviewRetryTimer = 0;
+    loadOverview();
+  }, 15000);
+}
+
 async function loadOverview() {
+  const hasRenderedData = overviewItems.length > 0;
   hideError();
   refreshButton.disabled = true;
-  factorTableBody.innerHTML = `
-    <tr>
-      <td colspan="6" class="loading-cell">正在刷新数据...</td>
-    </tr>
-  `;
+  if (!hasRenderedData) {
+    factorTableBody.innerHTML = `
+      <tr>
+        <td colspan="6" class="loading-cell">正在刷新数据...</td>
+      </tr>
+    `;
+  }
 
   try {
     const response = await fetch("/api/overview", { headers: { Accept: "application/json" } });
@@ -263,6 +277,10 @@ async function loadOverview() {
     }
 
     const payload = await response.json();
+    if (overviewRetryTimer && !payload.refreshing) {
+      window.clearTimeout(overviewRetryTimer);
+      overviewRetryTimer = 0;
+    }
     overviewItems = payload.items || [];
     availableTimeframes = payload.timeframes?.length ? payload.timeframes : [...FALLBACK_TIMEFRAMES];
     if (!availableTimeframes.includes(activeTimeframe)) {
@@ -277,13 +295,18 @@ async function loadOverview() {
     renderRows(overviewItems);
     updateSortButtons();
     updateSignalFilterButtons();
+    if (payload.refreshing) {
+      scheduleOverviewRetry();
+    }
   } catch (error) {
     showError(error.message || "加载失败");
-    factorTableBody.innerHTML = `
-      <tr>
-        <td colspan="6" class="loading-cell">暂无可展示数据</td>
-      </tr>
-    `;
+    if (!hasRenderedData) {
+      factorTableBody.innerHTML = `
+        <tr>
+          <td colspan="6" class="loading-cell">暂无可展示数据</td>
+        </tr>
+      `;
+    }
   } finally {
     refreshButton.disabled = false;
   }

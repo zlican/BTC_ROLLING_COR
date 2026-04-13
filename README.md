@@ -9,6 +9,8 @@ Current scope / 当前范围：
 
 - Fixed symbol universe loaded from `symbols.json`
 - 固定标的池通过 `symbols.json` 加载
+- Binance dynamic momentum universe
+- Binance 动态强势候选池
 - Universe members / 当前标的名单见：
 - `symbols.json`
 - Multi-timeframe factor boards / 多周期因子面板：
@@ -21,6 +23,15 @@ Current scope / 当前范围：
 - `beta`
 - 8-hour change still enriched from Binance futures `8h` klines
 - 8 小时涨跌幅仍通过 Binance 合约 `8h` K 线补充
+- Dynamic Binance candidates must satisfy:
+- Binance 动态候选需满足：
+- `quoteVolume > 100,000,000`
+- `24h priceChangePercent > 0`
+- `8h change > 0`
+- latest price above `1D EMA25`, `1D MA60`, `8H EMA25`, `8H MA60`
+- 最新价格站上 `1D EMA25`、`1D MA60`、`8H EMA25`、`8H MA60`
+- Dynamic Binance candidates only enter `1H` and `4H` factor boards
+- Binance 动态候选只进入 `1H` 和 `4H` 因子面板
 - Main page / 主页面支持：
 - timeframe board switch / 周期面板切换
 - column sort / 列排序

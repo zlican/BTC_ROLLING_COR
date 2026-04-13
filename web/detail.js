@@ -9,7 +9,7 @@ const factorTabs = document.getElementById("factorTabs");
 const factorCards = document.getElementById("factorCards");
 const chartElement = document.getElementById("chart");
 
-const AUTO_REFRESH_MS = 60 * 60 * 1000;
+const AUTO_REFRESH_MS = 5 * 60 * 1000;
 const factorMap = {
   corr: { label: "Corr", key: "corr_points", latestKey: "corr", color: "#c9632b" },
   beta: { label: "Beta", key: "beta_points", latestKey: "beta", color: "#2f7d6a" },
@@ -31,6 +31,7 @@ let chartInstance;
 let detailPayload;
 let selectedTimeframe;
 let selectedFactor = "corr";
+let detailRetryTimer = 0;
 
 function getQueryParam(key) {
   const params = new URLSearchParams(window.location.search);
@@ -243,8 +244,19 @@ function render() {
   renderChart();
 }
 
+function scheduleDetailRetry() {
+  if (detailRetryTimer) {
+    return;
+  }
+  detailRetryTimer = window.setTimeout(() => {
+    detailRetryTimer = 0;
+    loadDetail();
+  }, 15000);
+}
+
 async function loadDetail() {
   const symbol = getSymbol();
+  const hasRenderedData = Boolean(detailPayload);
   if (!symbol) {
     showError("URL 中缺少 symbol 参数");
     detailTitle.textContent = "无法加载标的";
@@ -263,6 +275,10 @@ async function loadDetail() {
     }
 
     detailPayload = await response.json();
+    if (detailRetryTimer && !detailPayload.refreshing) {
+      window.clearTimeout(detailRetryTimer);
+      detailRetryTimer = 0;
+    }
     const requestedTimeframe = getRequestedTimeframe();
     selectedTimeframe = detailPayload.asset.frames.find((frame) => frame.timeframe === requestedTimeframe)?.timeframe
       || detailPayload.asset.frames.find((frame) => frame.timeframe === "1D")?.timeframe
@@ -270,10 +286,15 @@ async function loadDetail() {
       || "1D";
     setTimeframeQuery(selectedTimeframe);
     render();
+    if (detailPayload.refreshing) {
+      scheduleDetailRetry();
+    }
   } catch (error) {
     showError(error.message || "加载失败");
-    detailTitle.textContent = `${symbol} 数据加载失败`;
-    detailSubtitle.textContent = "请稍后重试。";
+    if (!hasRenderedData) {
+      detailTitle.textContent = `${symbol} 数据加载失败`;
+      detailSubtitle.textContent = "请稍后重试。";
+    }
   }
 }
 

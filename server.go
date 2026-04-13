@@ -20,6 +20,7 @@ type OverviewResponse struct {
 	Benchmark           string              `json:"benchmark"`
 	Timeframes          []string            `json:"timeframes"`
 	RollingWindow       int                 `json:"rolling_window"`
+	Refreshing          bool                `json:"refreshing"`
 	UpdatedAt           string              `json:"updated_at"`
 	UniverseUpdatedAt   string              `json:"universe_updated_at"`
 	UniverseMinQuoteVol float64             `json:"universe_min_quote_vol"`
@@ -53,6 +54,7 @@ type DetailResponse struct {
 	Benchmark     string            `json:"benchmark"`
 	Timeframes    []string          `json:"timeframes"`
 	RollingWindow int               `json:"rolling_window"`
+	Refreshing    bool              `json:"refreshing"`
 	UpdatedAt     string            `json:"updated_at"`
 	Asset         DetailAssetOutput `json:"asset"`
 }
@@ -159,6 +161,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		Benchmark:           dataset.Benchmark,
 		Timeframes:          dataset.Timeframes,
 		RollingWindow:       dataset.RollingWindow,
+		Refreshing:          s.service.IsDatasetRefreshing(),
 		UpdatedAt:           dataset.UpdatedAt.Format(timeLayout),
 		UniverseUpdatedAt:   dataset.UniverseUpdatedAt.Format(timeLayout),
 		UniverseMinQuoteVol: dataset.UniverseMinQuoteVol,
@@ -209,6 +212,7 @@ func (s *Server) handleDetail(w http.ResponseWriter, r *http.Request) {
 		Benchmark:     dataset.Benchmark,
 		Timeframes:    dataset.Timeframes,
 		RollingWindow: dataset.RollingWindow,
+		Refreshing:    s.service.IsDatasetRefreshing(),
 		UpdatedAt:     dataset.UpdatedAt.Format(timeLayout),
 		Asset: DetailAssetOutput{
 			Symbol:        asset.Symbol,
