@@ -14,6 +14,7 @@ const signalFilterButtons = Array.from(document.querySelectorAll(".signal-filter
 
 const AUTO_REFRESH_MS = 5 * 60 * 1000;
 const FALLBACK_TIMEFRAMES = ["1H", "4H", "1D", "3D"];
+const HIDDEN_1H_SYMBOLS = new Set(["ETHUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT", "XRPUSDT", "HYPEUSDT", "ZECUSDT", "NEARUSDT"]);
 const signalMeta = {
   follow: { label: "跟随", badgeClass: "badge-follow" },
   strong_follow: { label: "强跟随", badgeClass: "badge-strong-follow" },
@@ -22,7 +23,7 @@ const signalMeta = {
 
 let overviewItems = [];
 let availableTimeframes = [...FALLBACK_TIMEFRAMES];
-let activeTimeframe = "1D";
+let activeTimeframe = "1H";
 let sortState = { field: null, order: null };
 let searchKeyword = "";
 let signalFilter = "all";
@@ -119,6 +120,10 @@ function matchesSignalFilter(frame) {
   return frame?.signal_code === signalFilter;
 }
 
+function isHiddenInActiveBoard(asset) {
+  return activeTimeframe === "1H" && HIDDEN_1H_SYMBOLS.has(String(asset.symbol || "").toUpperCase());
+}
+
 function renderBoardTabs() {
   timeframeBoards.innerHTML = "";
   for (const timeframe of availableTimeframes) {
@@ -192,7 +197,7 @@ function getSortMetric(asset, field) {
 function getSortedItems(items) {
   const visible = items.filter((asset) => {
     const frame = getFrame(asset);
-    return isDisplayableFrame(frame) && matchesSearch(asset) && matchesSignalFilter(frame);
+    return !isHiddenInActiveBoard(asset) && isDisplayableFrame(frame) && matchesSearch(asset) && matchesSignalFilter(frame);
   });
   if (!sortState.field || !sortState.order) {
     return visible;
@@ -297,7 +302,7 @@ async function loadOverview() {
     overviewItems = payload.items || [];
     availableTimeframes = payload.timeframes?.length ? payload.timeframes : [...FALLBACK_TIMEFRAMES];
     if (!availableTimeframes.includes(activeTimeframe)) {
-      activeTimeframe = availableTimeframes.includes("1D") ? "1D" : availableTimeframes[0];
+      activeTimeframe = availableTimeframes.includes("1H") ? "1H" : availableTimeframes[0];
     }
 
     benchmarkValue.textContent = payload.benchmark;

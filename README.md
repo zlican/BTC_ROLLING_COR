@@ -104,6 +104,8 @@ Main page hides placeholder frames by default when / 主页面默认隐藏以下
 - 或者 `status != ok`
 - or all factor values are zero
 - 或四个因子值全为 0
+- `1H` board also hides `ETHUSDT`, `SOLUSDT`, `BNBUSDT`, `DOGEUSDT`, `XRPUSDT`, `HYPEUSDT`, `ZECUSDT`, `NEARUSDT`
+- `1H` 面板还会额外隐藏 `ETHUSDT`、`SOLUSDT`、`BNBUSDT`、`DOGEUSDT`、`XRPUSDT`、`HYPEUSDT`、`ZECUSDT`、`NEARUSDT`
 
 This keeps backend data complete while avoiding noisy rows in the main board.  
 这样可以保证后端保留完整数据，同时避免主面板出现无意义的噪音行。
@@ -117,6 +119,10 @@ Main page signal filter / 主页面信号过滤：
 
 Only one signal tag can be selected at a time.  
 同一时间只能选择一个信号标签。
+
+Main page default board / 主页面默认周期面板：
+
+- `1H`
 
 ## Project Structure / 项目结构
 
