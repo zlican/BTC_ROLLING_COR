@@ -36,7 +36,7 @@ const (
 	binanceMinRequestGap   = 120 * time.Millisecond
 	bybitMinRequestGap     = 120 * time.Millisecond
 	okxMinRequestGap       = 150 * time.Millisecond
-	minMomentumQuoteVolume = 100_000_000.0
+	minMomentumQuoteVolume = 250_000_000.0
 	emaPeriod              = 25
 	maPeriod               = 60
 )
@@ -217,6 +217,13 @@ type benchmarkData struct {
 	Series []dataPoint
 }
 
+type benchmarkFetchResult struct {
+	Provider  string
+	Timeframe string
+	Data      benchmarkData
+	Err       error
+}
+
 type assetResult struct {
 	Asset *AssetSeries
 	Skip  bool
@@ -235,15 +242,18 @@ type FactorService struct {
 	rollingWindow     int
 	fixedUniversePath string
 
-	datasetMu         sync.RWMutex
-	datasetCachedAt   time.Time
-	datasetCached     *FactorDataset
-	datasetRefreshing bool
+	datasetMu          sync.RWMutex
+	datasetCachedAt    time.Time
+	datasetCached      *FactorDataset
+	datasetRefreshing  bool
+	datasetRefreshDone chan struct{}
 
-	universeMu         sync.RWMutex
-	universeCachedAt   time.Time
-	universeUpdatedAt  time.Time
-	universeCachedList []AssetConfig
+	universeMu          sync.RWMutex
+	universeCachedAt    time.Time
+	universeUpdatedAt   time.Time
+	universeCachedList  []AssetConfig
+	universeRefreshing  bool
+	universeRefreshDone chan struct{}
 }
 
 func newHTTPClient() (*http.Client, error) {
@@ -259,9 +269,12 @@ func newHTTPClient() (*http.Client, error) {
 		DialContext: (&net.Dialer{
 			Timeout: requestTimeout,
 		}).DialContext,
+		MaxIdleConnsPerHost:   32,
+		MaxConnsPerHost:       64,
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          100,
 		IdleConnTimeout:       90 * time.Second,
+		ResponseHeaderTimeout: 15 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 	}
@@ -455,7 +468,7 @@ func (s *FactorService) GetDataset(ctx context.Context) (*FactorDataset, error) 
 		s.datasetMu.Unlock()
 		return s.waitForDataset(ctx)
 	}
-	s.datasetRefreshing = true
+	s.startDatasetRefreshLocked()
 	s.datasetMu.Unlock()
 
 	refreshCtx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
@@ -463,41 +476,40 @@ func (s *FactorService) GetDataset(ctx context.Context) (*FactorDataset, error) 
 
 	dataset, err := s.refresh(refreshCtx)
 
-	s.datasetMu.Lock()
-	defer s.datasetMu.Unlock()
-	s.datasetRefreshing = false
+	s.finishDatasetRefresh(dataset)
 	if err != nil {
 		return nil, err
 	}
 
-	s.datasetCached = dataset
-	s.datasetCachedAt = time.Now().UTC()
 	return dataset, nil
 }
 
 func (s *FactorService) waitForDataset(ctx context.Context) (*FactorDataset, error) {
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
+	s.datasetMu.RLock()
+	cached := s.datasetCached
+	refreshing := s.datasetRefreshing
+	done := s.datasetRefreshDone
+	s.datasetMu.RUnlock()
 
-	for {
-		s.datasetMu.RLock()
-		cached := s.datasetCached
-		refreshing := s.datasetRefreshing
-		s.datasetMu.RUnlock()
-
-		if cached != nil {
-			return cached, nil
-		}
-		if !refreshing {
-			return nil, errors.New("dataset refresh finished without cached data")
-		}
-
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-ticker.C:
-		}
+	if cached != nil {
+		return cached, nil
 	}
+	if !refreshing || done == nil {
+		return nil, errors.New("dataset refresh finished without cached data")
+	}
+
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-done:
+	}
+
+	s.datasetMu.RLock()
+	defer s.datasetMu.RUnlock()
+	if s.datasetCached != nil {
+		return s.datasetCached, nil
+	}
+	return nil, errors.New("dataset refresh finished without cached data")
 }
 
 func (s *FactorService) triggerDatasetRefresh() {
@@ -506,28 +518,48 @@ func (s *FactorService) triggerDatasetRefresh() {
 		s.datasetMu.Unlock()
 		return
 	}
-	s.datasetRefreshing = true
+	s.startDatasetRefreshLocked()
 	s.datasetMu.Unlock()
 
 	go s.refreshDatasetAsync()
 }
 
 func (s *FactorService) refreshDatasetAsync() {
+	startedAt := time.Now()
+	log.Printf("dataset background refresh started")
 	refreshCtx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
 	defer cancel()
 
 	dataset, err := s.refresh(refreshCtx)
 
-	s.datasetMu.Lock()
-	defer s.datasetMu.Unlock()
-	s.datasetRefreshing = false
+	s.finishDatasetRefresh(dataset)
 	if err != nil {
-		log.Printf("dataset background refresh failed, keep stale cache: %v", err)
+		log.Printf("dataset background refresh failed after %s, keep stale cache: %v", time.Since(startedAt).Round(time.Second), err)
 		return
 	}
 
-	s.datasetCached = dataset
-	s.datasetCachedAt = time.Now().UTC()
+	log.Printf("dataset background refresh finished in %s", time.Since(startedAt).Round(time.Second))
+}
+
+func (s *FactorService) startDatasetRefreshLocked() {
+	s.datasetRefreshing = true
+	s.datasetRefreshDone = make(chan struct{})
+}
+
+func (s *FactorService) finishDatasetRefresh(dataset *FactorDataset) {
+	s.datasetMu.Lock()
+	done := s.datasetRefreshDone
+	s.datasetRefreshing = false
+	s.datasetRefreshDone = nil
+	if dataset != nil {
+		s.datasetCached = dataset
+		s.datasetCachedAt = time.Now().UTC()
+	}
+	s.datasetMu.Unlock()
+
+	if done != nil {
+		close(done)
+	}
 }
 
 func (s *FactorService) IsDatasetRefreshing() bool {
@@ -536,35 +568,47 @@ func (s *FactorService) IsDatasetRefreshing() bool {
 	return s.datasetRefreshing
 }
 
+func (s *FactorService) StartBackgroundRefresh(ctx context.Context) {
+	log.Printf("background refresh loop started: interval=%s", s.datasetTTL)
+	s.triggerDatasetRefresh()
+
+	if s.datasetTTL <= 0 {
+		return
+	}
+
+	go func() {
+		ticker := time.NewTicker(s.datasetTTL)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				log.Printf("background refresh loop stopped")
+				return
+			case <-ticker.C:
+				s.triggerDatasetRefresh()
+			}
+		}
+	}()
+}
+
 func (s *FactorService) refresh(ctx context.Context) (*FactorDataset, error) {
+	startedAt := time.Now()
+	log.Printf("dataset refresh started")
+
 	assets, universeUpdatedAt, err := s.getDynamicUniverse(ctx)
 	if err != nil {
+		log.Printf("dataset refresh failed in %s during universe fetch: %v", time.Since(startedAt).Round(time.Second), err)
 		return nil, err
 	}
 	if len(assets) == 0 {
+		log.Printf("dataset refresh failed in %s: dynamic universe empty", time.Since(startedAt).Round(time.Second))
 		return nil, errors.New("dynamic universe is empty after filtering")
 	}
 
-	benchmarkSets := make(map[string]map[string]benchmarkData, len(s.providers))
-	for _, provider := range s.providers {
-		frames := make(map[string]benchmarkData, len(supportedTimeframes))
-		for _, timeframeName := range supportedTimeframes {
-			cfg := timeframeConfigs[timeframeName]
-			startDate, endDate := timeframeRange(cfg)
-			instID, series, fetchErr := provider.FetchBenchmarkHistory(ctx, cfg, startDate, endDate)
-			if fetchErr != nil {
-				continue
-			}
-			frames[timeframeName] = benchmarkData{
-				InstID: instID,
-				Series: series,
-			}
-		}
-		if len(frames) > 0 {
-			benchmarkSets[provider.Name()] = frames
-		}
-	}
+	benchmarkSets := s.fetchBenchmarkSets(ctx)
 	if len(benchmarkSets) == 0 {
+		log.Printf("dataset refresh failed in %s: benchmark fetch failed on all providers", time.Since(startedAt).Round(time.Second))
 		return nil, errors.New("failed to fetch benchmark history from all providers")
 	}
 
@@ -604,6 +648,7 @@ func (s *FactorService) refresh(ctx context.Context) (*FactorDataset, error) {
 	}
 
 	if len(dataset.Order) == 0 {
+		log.Printf("dataset refresh failed in %s: no assets remained after factor calculation", time.Since(startedAt).Round(time.Second))
 		return nil, errors.New("no assets remained after factor calculation and rolling-window filtering")
 	}
 
@@ -621,6 +666,7 @@ func (s *FactorService) refresh(ctx context.Context) (*FactorDataset, error) {
 		timeframeCounts["1D"],
 		timeframeCounts["3D"],
 	)
+	log.Printf("dataset refresh finished in %s", time.Since(startedAt).Round(time.Second))
 
 	sort.Slice(dataset.Order, func(i, j int) bool {
 		left := dataset.Assets[dataset.Order[i]]
@@ -632,6 +678,64 @@ func (s *FactorService) refresh(ctx context.Context) (*FactorDataset, error) {
 	})
 
 	return dataset, nil
+}
+
+func (s *FactorService) fetchBenchmarkSets(ctx context.Context) map[string]map[string]benchmarkData {
+	results := make(chan benchmarkFetchResult, len(s.providers)*len(supportedTimeframes))
+	sem := make(chan struct{}, 6)
+	var wg sync.WaitGroup
+
+	for _, provider := range s.providers {
+		provider := provider
+		for _, timeframeName := range supportedTimeframes {
+			cfg := timeframeConfigs[timeframeName]
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+
+				startDate, endDate := timeframeRange(cfg)
+				instID, series, err := provider.FetchBenchmarkHistory(ctx, cfg, startDate, endDate)
+				if err != nil {
+					results <- benchmarkFetchResult{
+						Provider:  provider.Name(),
+						Timeframe: cfg.Name,
+						Err:       err,
+					}
+					return
+				}
+
+				results <- benchmarkFetchResult{
+					Provider:  provider.Name(),
+					Timeframe: cfg.Name,
+					Data: benchmarkData{
+						InstID: instID,
+						Series: series,
+					},
+				}
+			}()
+		}
+	}
+
+	wg.Wait()
+	close(results)
+
+	benchmarkSets := make(map[string]map[string]benchmarkData, len(s.providers))
+	for result := range results {
+		if result.Err != nil {
+			log.Printf("benchmark fetch failed: provider=%s timeframe=%s err=%v", result.Provider, result.Timeframe, result.Err)
+			continue
+		}
+		frames := benchmarkSets[result.Provider]
+		if frames == nil {
+			frames = make(map[string]benchmarkData, len(supportedTimeframes))
+			benchmarkSets[result.Provider] = frames
+		}
+		frames[result.Timeframe] = result.Data
+	}
+
+	return benchmarkSets
 }
 
 func (s *FactorService) buildAssetSeries(ctx context.Context, cfg AssetConfig, benchmarkSets map[string]map[string]benchmarkData) assetResult {
@@ -710,7 +814,7 @@ func (s *FactorService) fetchFrame(ctx context.Context, cfg AssetConfig, cfgTime
 			if fallback == nil {
 				fallback = placeholderFrame(cfgTimeframe.Name, priceDates, instID, pairLabel, benchmark.InstID, provider.Name(), statusAlignmentFailed)
 			}
-			return frameFetchResult{Frame: fallback, Reason: err.Error()}
+			continue
 		}
 
 		returnDates, assetReturns, benchmarkReturns, err := computeReturns(priceDates, assetPrices, benchmarkPrices)
@@ -719,7 +823,7 @@ func (s *FactorService) fetchFrame(ctx context.Context, cfg AssetConfig, cfgTime
 			if fallback == nil {
 				fallback = placeholderFrame(cfgTimeframe.Name, priceDates, instID, pairLabel, benchmark.InstID, provider.Name(), statusInsufficientHistory)
 			}
-			return frameFetchResult{Frame: fallback, Reason: err.Error()}
+			continue
 		}
 
 		frame, err := buildFactorFrame(cfgTimeframe.Name, returnDates, assetReturns, benchmarkReturns, s.rollingWindow)
@@ -728,7 +832,7 @@ func (s *FactorService) fetchFrame(ctx context.Context, cfg AssetConfig, cfgTime
 			if fallback == nil {
 				fallback = placeholderFrame(cfgTimeframe.Name, returnDates, instID, pairLabel, benchmark.InstID, provider.Name(), placeholderSignalForFactorError(err))
 			}
-			return frameFetchResult{Frame: fallback, Reason: err.Error()}
+			continue
 		}
 
 		frame.InstID = instID
@@ -797,45 +901,127 @@ func pickPrimaryFrame(frames map[string]*FactorFrame) *FactorFrame {
 
 func (s *FactorService) getDynamicUniverse(ctx context.Context) ([]AssetConfig, time.Time, error) {
 	s.universeMu.RLock()
-	if len(s.universeCachedList) > 0 && time.Since(s.universeCachedAt) < s.universeTTL {
-		cached := cloneAssetConfigs(s.universeCachedList)
-		updatedAt := s.universeUpdatedAt
-		s.universeMu.RUnlock()
-		return cached, updatedAt, nil
-	}
+	cached := cloneAssetConfigs(s.universeCachedList)
+	cachedAt := s.universeCachedAt
+	updatedAt := s.universeUpdatedAt
 	s.universeMu.RUnlock()
 
-	s.universeMu.Lock()
-	defer s.universeMu.Unlock()
-
-	if len(s.universeCachedList) > 0 && time.Since(s.universeCachedAt) < s.universeTTL {
-		return cloneAssetConfigs(s.universeCachedList), s.universeUpdatedAt, nil
+	if len(cached) > 0 && time.Since(cachedAt) < s.universeTTL {
+		return cached, updatedAt, nil
 	}
+
+	s.universeMu.Lock()
+	if len(s.universeCachedList) > 0 && time.Since(s.universeCachedAt) < s.universeTTL {
+		cached = cloneAssetConfigs(s.universeCachedList)
+		updatedAt = s.universeUpdatedAt
+		s.universeMu.Unlock()
+		return cached, updatedAt, nil
+	}
+	if s.universeRefreshing {
+		s.universeMu.Unlock()
+		return s.waitForUniverse(ctx)
+	}
+	s.startUniverseRefreshLocked()
+	s.universeMu.Unlock()
+
+	startedAt := time.Now()
+	log.Printf("universe refresh started")
 
 	symbols, err := loadFixedUniverseSymbols(s.fixedUniversePath)
 	if err != nil {
+		s.finishUniverseRefresh(nil, time.Time{})
+		log.Printf("universe refresh failed in %s while loading symbols: %v", time.Since(startedAt).Round(time.Second), err)
 		return nil, time.Time{}, err
 	}
 
-	assets, updatedAt, err := s.universeProvider.FetchFixedUniverse(ctx, symbols)
-	if err != nil {
-		return nil, time.Time{}, err
-	}
+	tickerPayload, tickerErr := s.universeProvider.fetchTicker24h(ctx)
+	var assets []AssetConfig
+	var momentumAssets []AssetConfig
+	updatedAt = time.Now().UTC()
 
-	momentumAssets, momentumUpdatedAt, err := s.universeProvider.FetchMomentumUniverse(ctx)
-	if err != nil {
-		log.Printf("binance momentum universe refresh failed: %v", err)
-	} else {
-		assets = mergeAssetConfigs(assets, momentumAssets)
-		if momentumUpdatedAt.After(updatedAt) {
-			updatedAt = momentumUpdatedAt
+	if tickerErr != nil {
+		log.Printf("binance ticker 24hr fetch failed, fallback to fixed-only path: %v", tickerErr)
+		assets, updatedAt, err = s.universeProvider.FetchFixedUniverse(ctx, symbols)
+		if err != nil {
+			s.finishUniverseRefresh(nil, time.Time{})
+			log.Printf("universe refresh failed in %s while fetching fixed universe: %v", time.Since(startedAt).Round(time.Second), err)
+			return nil, time.Time{}, err
 		}
+	} else {
+		assets, err = s.universeProvider.buildFixedUniverseFromTicker(ctx, symbols, tickerPayload)
+		if err != nil {
+			s.finishUniverseRefresh(nil, time.Time{})
+			log.Printf("universe refresh failed in %s while building fixed universe: %v", time.Since(startedAt).Round(time.Second), err)
+			return nil, time.Time{}, err
+		}
+		momentumAssets, _, err = s.universeProvider.buildMomentumUniverseFromTicker(ctx, tickerPayload)
+		if err != nil {
+			log.Printf("binance momentum universe refresh failed: %v", err)
+		}
+		assets = mergeAssetConfigs(assets, momentumAssets)
+	}
+
+	s.finishUniverseRefresh(assets, updatedAt)
+	log.Printf("universe refresh finished in %s: symbols=%d", time.Since(startedAt).Round(time.Second), len(assets))
+	return cloneAssetConfigs(assets), updatedAt, nil
+}
+
+func (s *FactorService) waitForUniverse(ctx context.Context) ([]AssetConfig, time.Time, error) {
+	s.universeMu.RLock()
+	cached := cloneAssetConfigs(s.universeCachedList)
+	updatedAt := s.universeUpdatedAt
+	refreshing := s.universeRefreshing
+	done := s.universeRefreshDone
+	s.universeMu.RUnlock()
+
+	if len(cached) > 0 {
+		return cached, updatedAt, nil
+	}
+	if !refreshing || done == nil {
+		return nil, time.Time{}, errors.New("universe refresh finished without cached data")
+	}
+
+	select {
+	case <-ctx.Done():
+		return nil, time.Time{}, ctx.Err()
+	case <-done:
+	}
+
+	s.universeMu.RLock()
+	defer s.universeMu.RUnlock()
+	cached = cloneAssetConfigs(s.universeCachedList)
+	if len(cached) > 0 {
+		return cached, s.universeUpdatedAt, nil
+	}
+	return nil, time.Time{}, errors.New("universe refresh finished without cached data")
+}
+
+func (s *FactorService) startUniverseRefreshLocked() {
+	s.universeRefreshing = true
+	s.universeRefreshDone = make(chan struct{})
+}
+
+func (s *FactorService) finishUniverseRefresh(assets []AssetConfig, updatedAt time.Time) {
+	s.universeMu.Lock()
+	done := s.universeRefreshDone
+	s.universeRefreshing = false
+	s.universeRefreshDone = nil
+	if assets == nil {
+		s.universeMu.Unlock()
+		if done != nil {
+			close(done)
+		}
+		return
 	}
 
 	s.universeCachedList = cloneAssetConfigs(assets)
 	s.universeCachedAt = time.Now().UTC()
 	s.universeUpdatedAt = updatedAt
-	return cloneAssetConfigs(assets), updatedAt, nil
+	s.universeMu.Unlock()
+
+	if done != nil {
+		close(done)
+	}
 }
 
 func cloneAssetConfigs(items []AssetConfig) []AssetConfig {
@@ -946,8 +1132,18 @@ func (p *BinanceProvider) Name() string {
 }
 
 func (p *BinanceProvider) FetchFixedUniverse(ctx context.Context, symbols []string) ([]AssetConfig, time.Time, error) {
+	payload, err := p.fetchTicker24h(ctx)
+	if err != nil {
+		assets, buildErr := p.buildFixedUniverseFromTicker(ctx, symbols, nil)
+		return assets, time.Now().UTC(), buildErr
+	}
+	assets, buildErr := p.buildFixedUniverseFromTicker(ctx, symbols, payload)
+	return assets, time.Now().UTC(), buildErr
+}
+
+func (p *BinanceProvider) buildFixedUniverseFromTicker(ctx context.Context, symbols []string, payload []binanceTickerItem) ([]AssetConfig, error) {
 	if len(symbols) == 0 {
-		return nil, time.Time{}, errors.New("fixed universe is empty")
+		return nil, errors.New("fixed universe is empty")
 	}
 
 	requested := make(map[string]struct{}, len(symbols))
@@ -970,30 +1166,22 @@ func (p *BinanceProvider) FetchFixedUniverse(ctx context.Context, symbols []stri
 		}
 	}
 
-	payload, err := p.fetchTicker24h(ctx)
-	if err != nil {
-		assets := flattenAssetConfigMap(assetsBySymbol, symbols)
-		return assets, time.Now().UTC(), nil
-	}
-
 	for _, item := range payload {
-		if _, ok := requested[item.Symbol]; !ok {
-			continue
-		}
+		if _, ok := requested[item.Symbol]; ok {
+			quoteVolume, err := strconv.ParseFloat(item.QuoteVolume, 64)
+			if err != nil {
+				continue
+			}
+			lastPrice, err := strconv.ParseFloat(item.LastPrice, 64)
+			if err != nil || lastPrice <= 0 {
+				continue
+			}
 
-		quoteVolume, err := strconv.ParseFloat(item.QuoteVolume, 64)
-		if err != nil {
-			continue
+			cfg := assetsBySymbol[item.Symbol]
+			cfg.QuoteVolume = quoteVolume
+			cfg.LastPrice = lastPrice
+			assetsBySymbol[item.Symbol] = cfg
 		}
-		lastPrice, err := strconv.ParseFloat(item.LastPrice, 64)
-		if err != nil || lastPrice <= 0 {
-			continue
-		}
-
-		cfg := assetsBySymbol[item.Symbol]
-		cfg.QuoteVolume = quoteVolume
-		cfg.LastPrice = lastPrice
-		assetsBySymbol[item.Symbol] = cfg
 	}
 
 	assets := flattenAssetConfigMap(assetsBySymbol, symbols)
@@ -1002,7 +1190,7 @@ func (p *BinanceProvider) FetchFixedUniverse(ctx context.Context, symbols []stri
 		log.Printf("fixed universe 8h enrichment completed with fallbacks: %v", err)
 	}
 
-	return assets, time.Now().UTC(), nil
+	return assets, nil
 }
 
 func (p *BinanceProvider) FetchMomentumUniverse(ctx context.Context) ([]AssetConfig, time.Time, error) {
@@ -1010,7 +1198,10 @@ func (p *BinanceProvider) FetchMomentumUniverse(ctx context.Context) ([]AssetCon
 	if err != nil {
 		return nil, time.Time{}, err
 	}
+	return p.buildMomentumUniverseFromTicker(ctx, payload)
+}
 
+func (p *BinanceProvider) buildMomentumUniverseFromTicker(ctx context.Context, payload []binanceTickerItem) ([]AssetConfig, time.Time, error) {
 	candidates := make([]AssetConfig, 0, len(payload))
 	for _, item := range payload {
 		if !strings.HasSuffix(item.Symbol, "USDT") || item.Symbol == "BTCUSDT" {

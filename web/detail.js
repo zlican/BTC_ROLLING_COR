@@ -32,6 +32,8 @@ let detailPayload;
 let selectedTimeframe;
 let selectedFactor = "corr";
 let detailRetryTimer = 0;
+let detailRequestId = 0;
+let detailFetchController = null;
 
 function getQueryParam(key) {
   const params = new URLSearchParams(window.location.search);
@@ -255,6 +257,7 @@ function scheduleDetailRetry() {
 }
 
 async function loadDetail() {
+  const requestId = ++detailRequestId;
   const symbol = getSymbol();
   const hasRenderedData = Boolean(detailPayload);
   if (!symbol) {
@@ -264,17 +267,26 @@ async function loadDetail() {
   }
 
   hideError();
+  if (detailFetchController) {
+    detailFetchController.abort();
+  }
+  detailFetchController = new AbortController();
 
   try {
     const response = await fetch(`/api/detail?symbol=${encodeURIComponent(symbol)}`, {
       headers: { Accept: "application/json" },
+      signal: detailFetchController.signal,
     });
     if (!response.ok) {
       const payload = await response.json().catch(() => ({}));
       throw new Error(payload.error || "获取详情失败");
     }
 
-    detailPayload = await response.json();
+    const payload = await response.json();
+    if (requestId !== detailRequestId) {
+      return;
+    }
+    detailPayload = payload;
     if (detailRetryTimer && !detailPayload.refreshing) {
       window.clearTimeout(detailRetryTimer);
       detailRetryTimer = 0;
@@ -290,10 +302,17 @@ async function loadDetail() {
       scheduleDetailRetry();
     }
   } catch (error) {
+    if (error.name === "AbortError" || requestId !== detailRequestId) {
+      return;
+    }
     showError(error.message || "加载失败");
     if (!hasRenderedData) {
       detailTitle.textContent = `${symbol} 数据加载失败`;
       detailSubtitle.textContent = "请稍后重试。";
+    }
+  } finally {
+    if (requestId === detailRequestId) {
+      detailFetchController = null;
     }
   }
 }

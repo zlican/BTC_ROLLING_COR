@@ -25,13 +25,13 @@ Current scope / 当前范围：
 - 8 小时涨跌幅仍通过 Binance 合约 `8h` K 线补充
 - Dynamic Binance candidates must satisfy:
 - Binance 动态候选需满足：
-- `quoteVolume > 100,000,000`
+- `quoteVolume > 250,000,000`
 - `24h priceChangePercent > 0`
 - `8h change > 0`
 - latest price above `1D EMA25`, `1D MA60`, `8H EMA25`, `8H MA60`
 - 最新价格站上 `1D EMA25`、`1D MA60`、`8H EMA25`、`8H MA60`
-- Dynamic Binance candidates only enter `1H` and `4H` factor boards
-- Binance 动态候选只进入 `1H` 和 `4H` 因子面板
+- Dynamic Binance candidates only enter the `1H` factor board
+- Binance 动态候选只进入 `1H` 因子面板
 - Main page / 主页面支持：
 - timeframe board switch / 周期面板切换
 - column sort / 列排序
@@ -93,8 +93,8 @@ Rules / 规则：
 - Bybit 和 OKX 上“不支持该 symbol”的情况会被缓存，后续静默跳过，不重复报错。
 - Request layer includes retry, jitter, and per-provider pacing to reduce failure rate and over-request risk.
 - 请求层带有重试、随机抖动和按数据源节流，降低失败率和过量请求风险。
-- Dataset refresh runs in an internal background context and is not canceled by frontend request completion.
-- 数据刷新运行在后端独立上下文中，不会因为前端请求结束而被取消。
+- Dataset refresh starts automatically on service boot and keeps running in an internal background context.
+- 数据刷新会在服务启动时自动预热，并在后端独立上下文中持续运行。
 
 ## Frontend Display Rules / 前端展示规则
 
@@ -152,6 +152,7 @@ Returns / 返回内容：
 - benchmark metadata / 基准信息
 - supported timeframes / 支持的周期
 - rolling window / 滚动窗口
+- refresh status / 当前是否在后台刷新
 - dataset update times / 数据更新时间
 - asset list / 标的列表
 - per-frame values / 每个周期帧的最新值
@@ -217,12 +218,14 @@ go build .
 
 ## Refresh and Caching / 刷新与缓存
 
-- Dataset cache TTL: `1 hour`
-- 数据集缓存 TTL：`1 小时`
-- Universe cache TTL: `1 hour`
-- 标的池缓存 TTL：`1 小时`
-- Frontend auto refresh: `1 hour`
-- 前端自动刷新：`1 小时`
+- Dataset cache TTL: `5 minutes`
+- 数据集缓存 TTL：`5 分钟`
+- Universe cache TTL: `5 minutes`
+- 标的池缓存 TTL：`5 分钟`
+- Frontend auto refresh: `5 minutes`
+- 前端自动刷新：`5 分钟`
+- When a refresh is still running, API continues serving stale cached data first.
+- 当后台刷新尚未完成时，接口会优先继续返回旧缓存，避免页面真空期。
 
 ## Notes / 说明
 

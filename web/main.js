@@ -27,6 +27,8 @@ let sortState = { field: null, order: null };
 let searchKeyword = "";
 let signalFilter = "all";
 let overviewRetryTimer = 0;
+let overviewRequestId = 0;
+let overviewFetchController = null;
 
 function formatDateTime(value) {
   const date = new Date(value);
@@ -258,9 +260,14 @@ function scheduleOverviewRetry() {
 }
 
 async function loadOverview() {
+  const requestId = ++overviewRequestId;
   const hasRenderedData = overviewItems.length > 0;
   hideError();
   refreshButton.disabled = true;
+  if (overviewFetchController) {
+    overviewFetchController.abort();
+  }
+  overviewFetchController = new AbortController();
   if (!hasRenderedData) {
     factorTableBody.innerHTML = `
       <tr>
@@ -270,13 +277,19 @@ async function loadOverview() {
   }
 
   try {
-    const response = await fetch("/api/overview", { headers: { Accept: "application/json" } });
+    const response = await fetch("/api/overview", {
+      headers: { Accept: "application/json" },
+      signal: overviewFetchController.signal,
+    });
     if (!response.ok) {
       const payload = await response.json().catch(() => ({}));
       throw new Error(payload.error || "获取总览数据失败");
     }
 
     const payload = await response.json();
+    if (requestId !== overviewRequestId) {
+      return;
+    }
     if (overviewRetryTimer && !payload.refreshing) {
       window.clearTimeout(overviewRetryTimer);
       overviewRetryTimer = 0;
@@ -299,6 +312,9 @@ async function loadOverview() {
       scheduleOverviewRetry();
     }
   } catch (error) {
+    if (error.name === "AbortError" || requestId !== overviewRequestId) {
+      return;
+    }
     showError(error.message || "加载失败");
     if (!hasRenderedData) {
       factorTableBody.innerHTML = `
@@ -308,7 +324,10 @@ async function loadOverview() {
       `;
     }
   } finally {
-    refreshButton.disabled = false;
+    if (requestId === overviewRequestId) {
+      refreshButton.disabled = false;
+      overviewFetchController = null;
+    }
   }
 }
 
