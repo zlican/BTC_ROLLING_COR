@@ -9,29 +9,21 @@ Current scope / 当前范围：
 
 - Fixed symbol universe loaded from `config/symbols.json`
 - 固定标的池通过 `config/symbols.json` 加载
-- Binance dynamic momentum universe
-- Binance 动态强势候选池
-- Universe members / 当前标的名单见：
-- `config/symbols.json`
+- Current universe / 当前标的：
+- `ETHUSDT`
+- `SOLUSDT`
+- `BNBUSDT`
+- `DOGEUSDT`
+- `XRPUSDT`
 - Multi-timeframe factor boards / 多周期因子面板：
-- `1H`
 - `4H`
 - `1D`
 - `3D`
 - Two return-based factors / 两个基于收益率的因子：
 - `corr`
 - `beta`
-- 8-hour change still enriched from Binance futures `8h` klines
-- 8 小时涨跌幅仍通过 Binance 合约 `8h` K 线补充
-- Dynamic Binance candidates must satisfy:
-- Binance 动态候选需满足：
-- `quoteVolume > 250,000,000`
-- `24h priceChangePercent > 0`
-- `8h change > 0`
-- latest price above `1D EMA25`, `1D MA60`, `8H EMA25`, `8H MA60`
-- 最新价格站上 `1D EMA25`、`1D MA60`、`8H EMA25`、`8H MA60`
-- Dynamic Binance candidates only enter the `1H` factor board
-- Binance 动态候选只进入 `1H` 因子面板
+- 8-hour change is enriched from Binance futures `8h` klines
+- 8 小时涨跌幅通过 Binance 合约 `8h` K 线补充
 - Main page / 主页面支持：
 - timeframe board switch / 周期面板切换
 - column sort / 列排序
@@ -41,7 +33,6 @@ Current scope / 当前范围：
 - timeframe switch / 周期切换
 - factor switch / 因子切换
 - ECharts time series / ECharts 时序图
-
 ## Signal Design / 信号设计
 
 Backend returns English codes instead of Chinese labels.  
@@ -104,8 +95,6 @@ Main page hides placeholder frames by default when / 主页面默认隐藏以下
 - 或者 `status != ok`
 - or all factor values are zero
 - 或四个因子值全为 0
-- `1H` board also hides `ETHUSDT`, `SOLUSDT`, `BNBUSDT`, `DOGEUSDT`, `XRPUSDT`, `HYPEUSDT`, `ZECUSDT`, `NEARUSDT`
-- `1H` 面板还会额外隐藏 `ETHUSDT`、`SOLUSDT`、`BNBUSDT`、`DOGEUSDT`、`XRPUSDT`、`HYPEUSDT`、`ZECUSDT`、`NEARUSDT`
 
 This keeps backend data complete while avoiding noisy rows in the main board.  
 这样可以保证后端保留完整数据，同时避免主面板出现无意义的噪音行。
@@ -122,7 +111,7 @@ Only one signal tag can be selected at a time.
 
 Main page default board / 主页面默认周期面板：
 
-- `1H`
+- `4H`
 
 ## Project Structure / 项目结构
 
@@ -201,7 +190,7 @@ Edit symbols / 修改标的：
 
 ```json
 {
-  "symbols": ["ETHUSDT", "SOLUSDT", "XRPUSDT"]
+  "symbols": ["ETHUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT", "XRPUSDT"]
 }
 ```
 

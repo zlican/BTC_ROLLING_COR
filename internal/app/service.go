@@ -26,18 +26,15 @@ const (
 	okxHistoryCandlesURL = "https://www.okx.com/api/v5/market/history-candles"
 	defaultProxyURL      = "http://127.0.0.1:10809"
 
-	requestTimeout         = 20 * time.Second
-	refreshTimeout         = 3 * time.Minute
-	pageLimit              = 100
-	minReturnVar           = 1e-10
-	maxRequestAttempts     = 4
-	maxErrorBodyPreview    = 256
-	binanceMinRequestGap   = 120 * time.Millisecond
-	bybitMinRequestGap     = 120 * time.Millisecond
-	okxMinRequestGap       = 150 * time.Millisecond
-	minMomentumQuoteVolume = 250_000_000.0
-	emaPeriod              = 25
-	maPeriod               = 60
+	requestTimeout       = 20 * time.Second
+	refreshTimeout       = 3 * time.Minute
+	pageLimit            = 100
+	minReturnVar         = 1e-10
+	maxRequestAttempts   = 4
+	maxErrorBodyPreview  = 256
+	binanceMinRequestGap = 120 * time.Millisecond
+	bybitMinRequestGap   = 120 * time.Millisecond
+	okxMinRequestGap     = 150 * time.Millisecond
 )
 
 var errSymbolUnsupported = errors.New("symbol unsupported by provider")
@@ -60,14 +57,6 @@ type TimeframeConfig struct {
 }
 
 var timeframeConfigs = map[string]TimeframeConfig{
-	"1H": {
-		Name:            "1H",
-		BinanceInterval: "1h",
-		BybitInterval:   "60",
-		OKXBar:          "1H",
-		CandleDuration:  time.Hour,
-		HistoryBars:     240,
-	},
 	"4H": {
 		Name:            "4H",
 		BinanceInterval: "4h",
@@ -94,7 +83,7 @@ var timeframeConfigs = map[string]TimeframeConfig{
 	},
 }
 
-var supportedTimeframes = []string{"1H", "4H", "1D", "3D"}
+var supportedTimeframes = []string{"4H", "1D", "3D"}
 
 const (
 	statusOK                  = "ok"
@@ -116,7 +105,6 @@ type AssetConfig struct {
 	EightHourPct float64
 	UniverseRank int
 	Timeframes   []string
-	IsMomentum   bool
 }
 
 type FactorPoint struct {
@@ -595,14 +583,14 @@ func (s *FactorService) refresh(ctx context.Context) (*FactorDataset, error) {
 	startedAt := time.Now()
 	log.Printf("dataset refresh started")
 
-	assets, universeUpdatedAt, err := s.getDynamicUniverse(ctx)
+	assets, universeUpdatedAt, err := s.getFixedUniverse(ctx)
 	if err != nil {
 		log.Printf("dataset refresh failed in %s during universe fetch: %v", time.Since(startedAt).Round(time.Second), err)
 		return nil, err
 	}
 	if len(assets) == 0 {
-		log.Printf("dataset refresh failed in %s: dynamic universe empty", time.Since(startedAt).Round(time.Second))
-		return nil, errors.New("dynamic universe is empty after filtering")
+		log.Printf("dataset refresh failed in %s: fixed universe empty", time.Since(startedAt).Round(time.Second))
+		return nil, errors.New("fixed universe is empty")
 	}
 
 	benchmarkSets := s.fetchBenchmarkSets(ctx)
@@ -657,10 +645,9 @@ func (s *FactorService) refresh(ctx context.Context) (*FactorDataset, error) {
 			timeframeCounts[timeframeName]++
 		}
 	}
-	log.Printf("dataset refreshed: universe=%d assets=%d 1H=%d 4H=%d 1D=%d 3D=%d",
+	log.Printf("dataset refreshed: universe=%d assets=%d 4H=%d 1D=%d 3D=%d",
 		len(assets),
 		len(dataset.Order),
-		timeframeCounts["1H"],
 		timeframeCounts["4H"],
 		timeframeCounts["1D"],
 		timeframeCounts["3D"],
@@ -757,13 +744,6 @@ func (s *FactorService) buildAssetSeries(ctx context.Context, cfg AssetConfig, b
 
 	if len(frameOrder) == 0 {
 		return assetResult{Skip: true}
-	}
-
-	if cfg.IsMomentum {
-		frame, ok := frames["1H"]
-		if !ok || frame == nil || frame.Status != statusOK || frame.LatestCorr >= 0.5 {
-			return assetResult{Skip: true}
-		}
 	}
 
 	primaryFrame := pickPrimaryFrame(frames)
@@ -887,7 +867,7 @@ func placeholderFrame(timeframe string, dates []time.Time, instID, pairLabel, be
 }
 
 func pickPrimaryFrame(frames map[string]*FactorFrame) *FactorFrame {
-	for _, timeframeName := range []string{"1D", "1H", "4H", "3D"} {
+	for _, timeframeName := range []string{"1D", "4H", "3D"} {
 		if frame, ok := frames[timeframeName]; ok {
 			return frame
 		}
@@ -898,7 +878,7 @@ func pickPrimaryFrame(frames map[string]*FactorFrame) *FactorFrame {
 	return &FactorFrame{}
 }
 
-func (s *FactorService) getDynamicUniverse(ctx context.Context) ([]AssetConfig, time.Time, error) {
+func (s *FactorService) getFixedUniverse(ctx context.Context) ([]AssetConfig, time.Time, error) {
 	s.universeMu.RLock()
 	cached := cloneAssetConfigs(s.universeCachedList)
 	cachedAt := s.universeCachedAt
@@ -933,31 +913,11 @@ func (s *FactorService) getDynamicUniverse(ctx context.Context) ([]AssetConfig, 
 		return nil, time.Time{}, err
 	}
 
-	tickerPayload, tickerErr := s.universeProvider.fetchTicker24h(ctx)
-	var assets []AssetConfig
-	var momentumAssets []AssetConfig
-	updatedAt = time.Now().UTC()
-
-	if tickerErr != nil {
-		log.Printf("binance ticker 24hr fetch failed, fallback to fixed-only path: %v", tickerErr)
-		assets, updatedAt, err = s.universeProvider.FetchFixedUniverse(ctx, symbols)
-		if err != nil {
-			s.finishUniverseRefresh(nil, time.Time{})
-			log.Printf("universe refresh failed in %s while fetching fixed universe: %v", time.Since(startedAt).Round(time.Second), err)
-			return nil, time.Time{}, err
-		}
-	} else {
-		assets, err = s.universeProvider.buildFixedUniverseFromTicker(ctx, symbols, tickerPayload)
-		if err != nil {
-			s.finishUniverseRefresh(nil, time.Time{})
-			log.Printf("universe refresh failed in %s while building fixed universe: %v", time.Since(startedAt).Round(time.Second), err)
-			return nil, time.Time{}, err
-		}
-		momentumAssets, _, err = s.universeProvider.buildMomentumUniverseFromTicker(ctx, tickerPayload)
-		if err != nil {
-			log.Printf("binance momentum universe refresh failed: %v", err)
-		}
-		assets = mergeAssetConfigs(assets, momentumAssets)
+	assets, updatedAt, err := s.universeProvider.FetchFixedUniverse(ctx, symbols)
+	if err != nil {
+		s.finishUniverseRefresh(nil, time.Time{})
+		log.Printf("universe refresh failed in %s while fetching fixed universe: %v", time.Since(startedAt).Round(time.Second), err)
+		return nil, time.Time{}, err
 	}
 
 	s.finishUniverseRefresh(assets, updatedAt)
@@ -1136,9 +1096,6 @@ func timeframeCompletedBoundary(cfg TimeframeConfig, now time.Time) time.Time {
 	now = now.UTC()
 
 	switch cfg.Name {
-	case "1H":
-		current := now.Truncate(time.Hour)
-		return current.Add(-time.Hour)
 	case "4H":
 		current := time.Date(now.Year(), now.Month(), now.Day(), (now.Hour()/4)*4, 0, 0, 0, time.UTC)
 		return current.Add(-4 * time.Hour)
