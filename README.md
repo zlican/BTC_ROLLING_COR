@@ -7,12 +7,12 @@ This project is a Go backend plus static frontend dashboard for crypto factor mo
 
 Current scope / 当前范围：
 
-- Fixed symbol universe loaded from `symbols.json`
-- 固定标的池通过 `symbols.json` 加载
+- Fixed symbol universe loaded from `config/symbols.json`
+- 固定标的池通过 `config/symbols.json` 加载
 - Binance dynamic momentum universe
 - Binance 动态强势候选池
 - Universe members / 当前标的名单见：
-- `symbols.json`
+- `config/symbols.json`
 - Multi-timeframe factor boards / 多周期因子面板：
 - `1H`
 - `4H`
@@ -127,26 +127,26 @@ Main page default board / 主页面默认周期面板：
 ## Project Structure / 项目结构
 
 - `main.go`
-- app bootstrap / 程序入口
-- `service.go`
-- fixed universe loading / 固定标的配置加载
+- thin app bootstrap / 轻量程序入口
+- `internal/app/service.go`
+- service orchestration and cache / 服务编排与缓存
 - market data providers / 多数据源提供器
 - retries and pacing / 重试与节流
 - factor calculation / 因子计算
-- `symbols.json`
+- `config/symbols.json`
 - fixed symbol list config / 固定标的名单配置
-- `server.go`
+- `internal/app/server.go`
 - HTTP routes / HTTP 路由
 - API serialization / API 输出结构
-- `web/index.html`
+- `internal/app/web/index.html`
 - overview page / 总览页面
-- `web/main.js`
+- `internal/app/web/main.js`
 - overview interactions / 总览页交互逻辑
-- `web/detail.html`
+- `internal/app/web/detail.html`
 - detail page / 详情页面
-- `web/detail.js`
+- `internal/app/web/detail.js`
 - detail interactions / 详情页交互逻辑
-- `web/styles.css`
+- `internal/app/web/styles.css`
 - shared styles / 公共样式
 
 ## API / 接口
@@ -205,10 +205,10 @@ Edit symbols / 修改标的：
 }
 ```
 
-- Update `symbols.json` instead of editing Go code.
-- 以后修改标的时直接更新 `symbols.json`，不需要改 Go 代码。
-- Restart the service after editing `symbols.json`.
-- 修改 `symbols.json` 后重启服务即可生效。
+- Update `config/symbols.json` instead of editing Go code.
+- 以后修改标的时直接更新 `config/symbols.json`，不需要改 Go 代码。
+- Restart the service after editing `config/symbols.json`.
+- 修改 `config/symbols.json` 后重启服务即可生效。
 
 Open / 打开：
 
